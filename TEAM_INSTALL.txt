@@ -1,0 +1,45 @@
+INSTALL HELP CENTER MONITOR
+===========================
+
+Do this once. You do not need Terminal, Python, or source code.
+
+Before you start
+----------------
+- macOS 13 or newer
+- The Slack token sent separately through the company password manager or
+  approved secret-sharing tool
+
+Never put the token in email or an ordinary Slack message.
+
+Install
+-------
+1. Drag Help Center Monitor onto Applications.
+2. Eject this disk image, then open Help Center Monitor from Applications.
+3. Click Allow when macOS asks about notifications.
+4. Paste the separately supplied token into the secure setup box with Command+V,
+   then click Save. If needed, click Set Up Slack Access first.
+5. Make sure the Monitoring switch is green and on.
+
+If macOS says the developer cannot be verified, stop and contact the release
+owner. Do not bypass the warning.
+
+Confirm it works
+----------------
+The panel should show Monitoring, Secured credentials, Enabled alerts, a recent
+Last checked time, and a green automatic-login status.
+
+If automatic start needs approval, click the menu-bar bell, choose Allow
+Automatic Start, and enable Help Center Monitor in System Settings > General >
+Login Items. Return to the app and confirm the bottom line is green.
+
+Turn up the Mac's output volume and click Send Test Alert. Expect:
+- a notification banner
+- the Glass alert sound
+- the spoken words: "New ticket in help-center"
+
+Done
+----
+Close the panel. The menu-bar bell stays running, and the app starts at login.
+Open Help Center Monitor later from Spotlight to enable or disable monitoring.
+
+If any row remains red, use the button beside it or contact the release owner.

@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""
+bin/slack-refresh-tokens — pull xoxc + xoxd from the Mac Slack desktop app,
+verify them against slack.com, and write the two SLACK_MCP_* exports into
+~/.zshrc (replacing any prior values).
+
+No pip dependencies — uses Python stdlib + macOS `security` + `openssl`.
+
+Run when:
+- First-time setup (instead of digging through Chrome DevTools).
+- The Slack MCP starts failing with auth errors (SSO expired, Slack rotated
+  the session, you logged out, etc.). Re-sign into the Slack desktop app
+  first, then run this.
+
+After running:
+    source ~/.zshrc
+Then restart Claude Code so the MCP server inherits the new env vars.
+"""
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# Mac App Store install (com.tinyspeck.slackmacgap) writes here.
+SANDBOX = Path.home() / "Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack"
+# Non-MAS direct download writes here.
+STANDARD = Path.home() / "Library/Application Support/Slack"
+SLACK_DIR = SANDBOX if SANDBOX.exists() else STANDARD
+LEVELDB = SLACK_DIR / "Local Storage/leveldb"
+COOKIES_DB = SLACK_DIR / "Cookies"
+ZSHRC = Path.home() / ".zshrc"
+# Project .mcp.json — Claude Code reads this at startup. GUI launches from
+# Dock/Spotlight do NOT inherit ~/.zshrc, so the placeholder form
+# "${SLACK_MCP_XOXC_TOKEN}" silently resolves to empty and the MCP server
+# fails to authenticate. Writing literal values here bypasses that.
+MCP_JSON = Path(__file__).resolve().parent.parent / ".mcp.json"
+
+XOXC_BARE = re.compile(rb"xoxc-[0-9A-Za-z-]{50,200}")
+XOXC_QUOTED = re.compile(rb'"token":"(xoxc-[0-9A-Za-z-]{50,200})"')
+
+
+def fail(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def find_xoxc():
+    if not LEVELDB.exists():
+        fail(f"leveldb dir not found: {LEVELDB}\nIs the Slack desktop app installed and signed in?")
+    found = {}  # token -> (quoted_context_seen, max_mtime)
+    for f in LEVELDB.iterdir():
+        if f.suffix not in (".ldb", ".log"):
+            continue
+        try:
+            data = f.read_bytes()
+        except OSError:
+            continue
+        mt = f.stat().st_mtime
+        for m in XOXC_QUOTED.finditer(data):
+            tok = m.group(1).decode()
+            prev = found.get(tok, (False, 0))
+            found[tok] = (True, max(prev[1], mt))
+        for m in XOXC_BARE.finditer(data):
+            tok = m.group(0).decode()
+            if tok not in found:
+                found[tok] = (False, mt)
+    if not found:
+        fail("no xoxc- token found in Slack leveldb. Sign into the Slack desktop app and retry.")
+    # Prefer JSON-quoted matches (real localConfig token), then newest file.
+    return max(found.items(), key=lambda kv: (kv[1][0], kv[1][1]))[0]
+
+
+def keychain_password():
+    """Pull the AES password for 'Slack Safe Storage' from the user keychain.
+
+    macOS may hold two entries under service 'Slack Safe Storage':
+      - acct='Slack'               → non-MAS direct download (Slack.dmg)
+      - acct='Slack App Store Key' → Mac App Store install (com.tinyspeck.slackmacgap)
+    Pick the one matching the install we're reading data from. If only one
+    exists we accept it regardless of install type.
+    """
+    accts = ["Slack App Store Key", "Slack"] if SLACK_DIR == SANDBOX else ["Slack", "Slack App Store Key"]
+    last_err = ""
+    for acct in accts:
+        try:
+            out = subprocess.check_output(
+                ["security", "find-generic-password", "-wa", acct, "-s", "Slack Safe Storage"],
+                stderr=subprocess.PIPE,
+            )
+            return out.strip()
+        except subprocess.CalledProcessError as e:
+            last_err = e.stderr.decode().strip() if e.stderr else ""
+            continue
+    fail(
+        "could not read 'Slack Safe Storage' from Keychain.\n"
+        "If a Keychain prompt appeared, click 'Always Allow' so future runs are silent.\n"
+        f"(security said: {last_err or 'no output'})"
+    )
+
+
+def decrypt_cookie(encrypted, password):
+    """Chromium AES-128-CBC: PBKDF2-SHA1(saltysalt, 1003) → 16-byte key, IV = 0x20*16."""
+    if not encrypted.startswith(b"v10"):
+        fail(f"unexpected cookie cipher prefix {encrypted[:3]!r} (expected b'v10')")
+    key = hashlib.pbkdf2_hmac("sha1", password, b"saltysalt", 1003, dklen=16)
+    iv = b" " * 16
+    try:
+        plain = subprocess.check_output(
+            ["openssl", "enc", "-aes-128-cbc", "-d", "-K", key.hex(), "-iv", iv.hex()],
+            input=encrypted[3:],
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        fail("openssl not found on PATH.")
+    except subprocess.CalledProcessError as e:
+        fail(f"openssl decrypt failed: {e.stderr.decode().strip()}")
+    # Newer Chromium (and current Slack desktop) prefix the plaintext with a
+    # 32-byte SHA256 integrity tag over the cookie metadata. Older builds
+    # store the raw value. Slice from the first occurrence of 'xoxd-' to be
+    # robust to both layouts.
+    idx = plain.find(b"xoxd-")
+    if idx < 0:
+        fail(f"decrypted cookie does not contain 'xoxd-' marker (first 80 bytes: {plain[:80]!r})")
+    return plain[idx:].decode()
+
+
+def find_xoxd():
+    if not COOKIES_DB.exists():
+        fail(f"cookies db not found: {COOKIES_DB}")
+    conn = sqlite3.connect(f"file:{COOKIES_DB}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT encrypted_value FROM cookies "
+            "WHERE host_key LIKE '%slack.com' AND name = 'd' "
+            "ORDER BY last_access_utc DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        fail("no 'd' cookie for *.slack.com in Slack's cookies db.")
+    return decrypt_cookie(row[0], keychain_password())
+
+
+def verify(xoxc, xoxd):
+    req = urllib.request.Request(
+        "https://slack.com/api/auth.test",
+        data=urllib.parse.urlencode({"token": xoxc}).encode(),
+        headers={"Cookie": f"d={xoxd}"},
+    )
+    resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    if not resp.get("ok"):
+        fail(f"slack.com/api/auth.test rejected the tokens: {resp.get('error')}")
+    return resp
+
+
+def update_zshrc(xoxc, xoxd):
+    text = ZSHRC.read_text() if ZSHRC.exists() else ""
+    pat = re.compile(r"^\s*export\s+SLACK_MCP_(XOXC|XOXD)_TOKEN=")
+    kept = [l for l in text.splitlines() if not pat.match(l)]
+    kept += [
+        f'export SLACK_MCP_XOXC_TOKEN="{xoxc}"',
+        f'export SLACK_MCP_XOXD_TOKEN="{xoxd}"',
+    ]
+    ZSHRC.write_text("\n".join(kept).rstrip() + "\n")
+
+
+def update_mcp_json(xoxc, xoxd):
+    """Write literal token values into the project .mcp.json so GUI-launched
+    Claude Code can start the Slack MCP server without depending on shell env.
+    """
+    if not MCP_JSON.exists():
+        print(f"  (skipped: {MCP_JSON} not found)")
+        return
+    cfg = json.loads(MCP_JSON.read_text())
+    slack = cfg.get("mcpServers", {}).get("slack")
+    if not slack:
+        print(f"  (skipped: no mcpServers.slack entry in {MCP_JSON.name})")
+        return
+    slack.setdefault("env", {})
+    slack["env"]["SLACK_MCP_XOXC_TOKEN"] = xoxc
+    slack["env"]["SLACK_MCP_XOXD_TOKEN"] = xoxd
+    MCP_JSON.write_text(json.dumps(cfg, indent=2) + "\n")
+    # Tighten perms — the file now holds session credentials.
+    os.chmod(MCP_JSON, 0o600)
+
+
+def main():
+    print(f"→ Slack data dir: {SLACK_DIR}")
+    print("→ scanning leveldb for xoxc-…")
+    xoxc = find_xoxc()
+    print(f"  {xoxc[:14]}…{xoxc[-6:]}")
+
+    print("→ reading + decrypting 'd' cookie (may prompt Keychain on first run)…")
+    xoxd = find_xoxd()
+    print(f"  {xoxd[:8]}…{xoxd[-6:]}")
+
+    print("→ verifying with slack.com/api/auth.test…")
+    info = verify(xoxc, xoxd)
+    print(f"  ok — {info.get('user')} @ {info.get('team')}")
+
+    print(f"→ writing exports into {ZSHRC}…")
+    update_zshrc(xoxc, xoxd)
+    print(f"→ writing literal values into {MCP_JSON}…")
+    update_mcp_json(xoxc, xoxd)
+    print("done.")
+    print()
+    print("Next:")
+    print("  source ~/.zshrc        # for terminal sessions")
+    print("  # then restart Claude Code so the Slack MCP server starts with the new tokens")
+
+
+if __name__ == "__main__":
+    main()

@@ -125,6 +125,25 @@ public struct SlackClient {
         )
     }
 
+    public func fetchRecentMessages(
+        token: String,
+        channel: String,
+        limit: Int = 15
+    ) async throws -> [[String: Any]] {
+        let boundedLimit = min(max(limit, 1), 15)
+        let payload = try await apiCall(
+            method: "conversations.history",
+            token: token,
+            parameters: [
+                "channel": channel,
+                "limit": String(boundedLimit),
+            ]
+        )
+        return (payload["messages"] as? [[String: Any]] ?? []).filter {
+            SlackMessageParser.isTopLevelTicket($0)
+        }
+    }
+
     private func apiCall(
         method: String,
         token: String,

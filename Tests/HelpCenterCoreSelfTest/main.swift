@@ -60,12 +60,70 @@ expect(
     !SlackMessageParser.isTopLevelTicket(["ts": "100.3", "subtype": "channel_join"]),
     "ignored subtype is rejected"
 )
+expect(
+    TicketAlertMode.immediate.spokenAnnouncement == "New ticket in help-center",
+    "default monitoring keeps its original spoken announcement"
+)
+expect(
+    TicketAlertMode.pylonVerifiedTwoMinutes.spokenAnnouncement
+        == "Help Center message unanswered for 2 minutes",
+    "Pylon-verified monitoring has a distinct SLA-breach announcement"
+)
+
+let teamsLink = "https://teams.microsoft.com/l/message/19:ticket@thread.tacv2/1784313124?groupId=group-id&tenantId=tenant-id"
+let pylonBreach: [String: Any] = [
+    "ts": "1784313124.547789",
+    "username": "BetterHelp",
+    "text": "Issue #11540 first response SLA breached after 2 minutes",
+    "attachments": [[
+        "blocks": [[
+            "text": "<https://app.usepylon.com/issues?issueNumber=11540|View in Pylon> | <\(teamsLink.replacingOccurrences(of: "&", with: "&amp;"))|View in Microsoft Teams>",
+        ]],
+    ]],
+]
+expect(
+    SlackMessageParser.pylonIssueNumber(pylonBreach) == "11540",
+    "Pylon issue number is extracted from a verified SLA breach"
+)
+expect(
+    SlackMessageParser.isPylonSLABreach(pylonBreach),
+    "a Pylon issue with SLA-breached text is accepted"
+)
+expect(
+    !SlackMessageParser.isPylonSLABreach([
+        "ts": "1784313125.000000",
+        "text": "Issue #11540 customer added more information",
+    ]),
+    "an ordinary issue update in the Pylon channel is rejected"
+)
+expect(
+    !SlackMessageParser.isPylonSLABreach([
+        "ts": "1784313126.000000",
+        "text": "SLA breached after 2 minutes",
+    ]),
+    "an SLA phrase without a Pylon issue number is rejected"
+)
+expect(
+    SlackMessageParser.bestLink(
+        pylonBreach,
+        channel: "C0BD2LDGYSZ",
+        workspaceURL: "https://upwindsecurity.slack.com"
+    ) == teamsLink,
+    "a customer Teams link is preferred over the internal Pylon issue link"
+)
 
 let suite = "HelpCenterCoreSelfTest.\(UUID().uuidString)"
 if let defaults = UserDefaults(suiteName: suite) {
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = MonitorState(defaults: defaults)
     expect(state.isMonitoringEnabled, "monitoring defaults to enabled")
+    expect(state.responseDelayMinutes == 0, "response delay defaults to immediate alerts")
+    state.responseDelayMinutes = -1
+    expect(state.responseDelayMinutes == 0, "response delay is clamped to zero minutes")
+    state.responseDelayMinutes = 1
+    expect(state.responseDelayMinutes == 2, "a positive legacy delay selects Pylon's two-minute mode")
+    state.responseDelayMinutes = 11
+    expect(state.responseDelayMinutes == 2, "only immediate and two-minute modes are supported")
     expect(state.pollInterval == 30, "poll interval defaults to 30 seconds")
     state.pollInterval = 1
     expect(state.pollInterval == 30, "poll interval is clamped to 30 seconds")
@@ -75,10 +133,41 @@ if let defaults = UserDefaults(suiteName: suite) {
     state.setLastTimestamp("123.456", for: "C1")
     let restored = MonitorState(defaults: defaults)
     expect(!restored.isMonitoringEnabled, "enablement is persisted")
+    expect(restored.responseDelayMinutes == 2, "Pylon's two-minute mode is persisted")
     expect(restored.lastTimestamp(for: "C1") == "123.456", "timestamp is persisted")
     expect(restored.lastTimestamp(for: "C2") == nil, "timestamps are scoped per channel")
 } else {
     expect(false, "isolated UserDefaults suite can be created")
+}
+
+let legacySuite = "HelpCenterCoreSelfTest.Legacy.\(UUID().uuidString)"
+if let legacyDefaults = UserDefaults(suiteName: legacySuite) {
+    defer { legacyDefaults.removePersistentDomain(forName: legacySuite) }
+    legacyDefaults.set(true, forKey: "advancedMonitoringEnabled")
+    legacyDefaults.set(7, forKey: "advancedResponseMinutes")
+    let migrated = MonitorState(defaults: legacyDefaults)
+    expect(
+        migrated.responseDelayMinutes == 2,
+        "the previous enabled advanced mode migrates to Pylon's verified two-minute mode"
+    )
+} else {
+    expect(false, "legacy UserDefaults suite can be created")
+}
+
+let unsafeDelaySuite = "HelpCenterCoreSelfTest.UnsafeDelay.\(UUID().uuidString)"
+if let unsafeDelayDefaults = UserDefaults(suiteName: unsafeDelaySuite) {
+    defer { unsafeDelayDefaults.removePersistentDomain(forName: unsafeDelaySuite) }
+    unsafeDelayDefaults.set(5, forKey: "responseDelayMinutes")
+    unsafeDelayDefaults.set(true, forKey: "responseDelayMigrationCompleted")
+    unsafeDelayDefaults.set(Data("retired pending state".utf8), forKey: "pendingFirstTouchTickets")
+    let migrated = MonitorState(defaults: unsafeDelayDefaults)
+    expect(migrated.responseDelayMinutes == 2, "a saved arbitrary delay migrates to two minutes")
+    expect(
+        unsafeDelayDefaults.object(forKey: "pendingFirstTouchTickets") == nil,
+        "migration removes pending tickets created by the retired assignee heuristic"
+    )
+} else {
+    expect(false, "unsafe-delay UserDefaults suite can be created")
 }
 
 final class MockSlackURLProtocol: URLProtocol {
@@ -183,6 +272,89 @@ Task {
     }
 }
 networkCheck.wait()
+
+final class MockPylonFeedURLProtocol: URLProtocol {
+    private func bodyString() -> String {
+        if let data = request.httpBody {
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        guard let stream = request.httpBodyStream else { return "" }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let body = bodyString()
+        expect(
+            request.url?.path == "/conversations.history",
+            "Pylon verification only reads the verified feed's history"
+        )
+        expect(
+            body.contains("channel=C0BD2LDGYSZ"),
+            "Pylon verification stays in the two-minute feed"
+        )
+        expect(body.contains("limit=15"), "Pylon verification inspects a bounded recent sample")
+
+        var threadReply = pylonBreach
+        threadReply["ts"] = "1784313125.000000"
+        threadReply["thread_ts"] = "1784313124.547789"
+        let ordinaryUpdate: [String: Any] = [
+            "ts": "1784313126.000000",
+            "text": "Issue #11541 customer added more information",
+        ]
+        let payload: [String: Any] = [
+            "ok": true,
+            "messages": [ordinaryUpdate, threadReply, pylonBreach],
+        ]
+
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+        )!
+        let data = try! JSONSerialization.data(withJSONObject: payload)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+let pylonFeedCheck = DispatchGroup()
+pylonFeedCheck.enter()
+let pylonFeedConfiguration = URLSessionConfiguration.ephemeral
+pylonFeedConfiguration.protocolClasses = [MockPylonFeedURLProtocol.self]
+let pylonFeedSlack = SlackClient(
+    apiBase: "https://mock.slack.test",
+    session: URLSession(configuration: pylonFeedConfiguration)
+)
+Task {
+    defer { pylonFeedCheck.leave() }
+    do {
+        let recent = try await pylonFeedSlack.fetchRecentMessages(
+            token: "xoxb-test",
+            channel: "C0BD2LDGYSZ"
+        )
+        expect(recent.count == 2, "Pylon verification ignores thread replies")
+        expect(
+            recent.contains(where: SlackMessageParser.isPylonSLABreach),
+            "Pylon verification finds a recent verified SLA breach"
+        )
+    } catch {
+        expect(false, "Pylon feed verification succeeds: \(error)")
+    }
+}
+pylonFeedCheck.wait()
 
 let applicationMenu = HelpCenterApplicationMenu.make()
 let editMenu = applicationMenu.items

@@ -6,6 +6,17 @@ import HelpCenterUI
 import OSLog
 import ServiceManagement
 
+private enum PylonFeedVerificationError: LocalizedError {
+    case noRecentBreach
+
+    var errorDescription: String? {
+        switch self {
+        case .noRecentBreach:
+            return "No recent Pylon SLA-breach event was found in #wg-first-touch-monitor. Try again after the next two-minute breach appears."
+        }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(
@@ -19,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusBarItem: NSStatusItem!
     private var enabledMenuItem: NSMenuItem!
+    private var responseDelayMenuItem: NSMenuItem!
+    private var verifyResponseMenuItem: NSMenuItem!
     private var statusMenuItem: NSMenuItem!
     private var lastCheckMenuItem: NSMenuItem!
     private var notificationMenuItem: NSMenuItem!
@@ -148,6 +161,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         enabledMenuItem.isEnabled = true
         menu.addItem(enabledMenuItem)
 
+        responseDelayMenuItem = NSMenuItem(
+            title: "Alert Mode: Immediate",
+            action: #selector(openControlWindowFromMenu),
+            keyEquivalent: ""
+        )
+        responseDelayMenuItem.target = self
+        responseDelayMenuItem.isEnabled = true
+        menu.addItem(responseDelayMenuItem)
+
+        verifyResponseMenuItem = NSMenuItem(
+            title: "Verify Pylon 2-Minute Feed…",
+            action: #selector(verifyPylonTwoMinuteFeed),
+            keyEquivalent: ""
+        )
+        verifyResponseMenuItem.target = self
+        menu.addItem(verifyResponseMenuItem)
+
         statusMenuItem = NSMenuItem(title: "Status: Starting…", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
@@ -230,22 +260,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func migrateLegacyTimestampIfNeeded() {
-        guard state.lastTimestamp(for: AppConfiguration.channel) == nil else { return }
+        guard state.lastTimestamp(for: AppConfiguration.defaultChannel) == nil else { return }
         let legacyURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".help-center-monitor-state.json")
         guard let data = try? Data(contentsOf: legacyURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let channelState = json[AppConfiguration.channel] as? [String: Any],
+              let channelState = json[AppConfiguration.defaultChannel] as? [String: Any],
               let timestamp = channelState["last_ts"] as? String,
               Double(timestamp) != nil else {
             return
         }
-        state.setLastTimestamp(timestamp, for: AppConfiguration.channel)
+        state.setLastTimestamp(timestamp, for: AppConfiguration.defaultChannel)
         logger.info("Imported last-seen timestamp from the legacy Python monitor")
     }
 
     @objc private func toggleMonitoring() {
         setMonitoringEnabled(!state.isMonitoringEnabled)
+    }
+
+    @objc private func openControlWindowFromMenu() {
+        showControlWindow()
+    }
+
+    private func setResponseDelayMinutes(_ minutes: Int) {
+        let clamped = MonitorState.clampedResponseDelayMinutes(minutes)
+        let previous = state.responseDelayMinutes
+        guard clamped != previous else {
+            updateControlWindow()
+            return
+        }
+        monitorTask?.cancel()
+        monitorTask = nil
+        state.responseDelayMinutes = clamped
+        // Every supported mode has its own Pylon-owned Slack feed. Start the
+        // newly selected feed from now so switching modes cannot replay a
+        // historical breach backlog.
+        state.clearLastTimestamp(for: activeChannel)
+        let modeDescription = clamped == 0
+            ? "immediate alerts"
+            : "Pylon-verified 2-minute SLA breaches"
+        logger.info(
+            "Alert mode changed to \(modeDescription, privacy: .public)"
+        )
+        updateEnabledAppearance()
+        if state.isMonitoringEnabled {
+            startMonitoring()
+        } else {
+            setStatus("Disabled")
+        }
     }
 
     private func setMonitoringEnabled(_ enabled: Bool) {
@@ -266,7 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Disabling means "do not alert me." Start from now when the user
             // re-enables monitoring instead of flooding them with tickets that
             // arrived while the app was deliberately paused.
-            state.clearLastTimestamp(for: AppConfiguration.channel)
+            state.clearLastTimestamp(for: activeChannel)
             state.isMonitoringEnabled = true
             startMonitoring()
         }
@@ -274,7 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sendTestNotification() {
-        notifications.sendTest { [weak self] result in
+        notifications.sendTest(mode: currentAlertMode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
@@ -294,6 +356,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func verifyPylonTwoMinuteFeed() {
+        guard state.responseDelayMinutes > 0 else {
+            showInformation(
+                title: "Immediate Alerts Are Selected",
+                message: "Select Pylon 2 min to verify the two-minute SLA-breach feed."
+            )
+            return
+        }
+        guard let token = token(promptIfMissing: true) else { return }
+        let previousStatus = currentStatus
+        setStatus("Verifying Pylon 2-minute feed…")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let messages = try await self.slack.fetchRecentMessages(
+                    token: token,
+                    channel: AppConfiguration.pylonVerifiedTwoMinuteChannel
+                )
+                guard messages.contains(where: SlackMessageParser.isPylonSLABreach) else {
+                    throw PylonFeedVerificationError.noRecentBreach
+                }
+
+                let deliveryResult = await withCheckedContinuation { continuation in
+                    self.notifications.sendTest(
+                        mode: .pylonVerifiedTwoMinutes
+                    ) { result in
+                        continuation.resume(returning: result)
+                    }
+                }
+                switch deliveryResult {
+                case .success:
+                    self.notificationsReady = true
+                    self.notificationStatusText = "Notifications enabled — Pylon feed test sent just now"
+                    self.updateNotificationAppearance()
+                case .failure(let error):
+                    self.notificationsReady = false
+                    self.notificationStatusText = error.localizedDescription
+                    self.updateNotificationAppearance()
+                    self.setStatus(previousStatus)
+                    self.showNotificationSetupAlert()
+                    return
+                }
+
+                self.setStatus(previousStatus)
+                self.showInformation(
+                    title: "Pylon Two-Minute Feed Verified",
+                    message: "The Monitoring Bot read a real SLA-breach event from #wg-first-touch-monitor. The app did not inspect #help-center, Assignee, or a customer channel.\n\nA labeled test notification was also sent so you can verify the Glass sound and spoken announcement."
+                )
+            } catch {
+                self.setStatus(previousStatus)
+                self.showError(
+                    title: "Pylon Feed Verification Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
     @objc private func replaceSlackToken() {
         let wasMissingCredential = !slackCredentialReady
         guard let newToken = promptForToken(replacingExisting: slackCredentialReady) else { return }
@@ -305,7 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             logger.info("Slack token replaced in Keychain")
             if wasMissingCredential && !state.isMonitoringEnabled {
-                state.clearLastTimestamp(for: AppConfiguration.channel)
+                state.clearLastTimestamp(for: activeChannel)
                 state.isMonitoringEnabled = true
             }
             updateEnabledAppearance()
@@ -356,6 +476,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onSetEnabled: { [weak self] enabled in
                     self?.setMonitoringEnabled(enabled)
                 },
+                onSetResponseDelay: { [weak self] minutes in
+                    self?.setResponseDelayMinutes(minutes)
+                },
+                onVerifyPylonFeed: { [weak self] in
+                    self?.verifyPylonTwoMinuteFeed()
+                },
                 onSendTest: { [weak self] in
                     self?.sendTestNotification()
                 },
@@ -396,10 +522,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func monitorLoop(token: String) async {
         var authenticated = false
         var networkBackoff: TimeInterval = 5
-        var lastTimestamp = state.lastTimestamp(for: AppConfiguration.channel)
+        let responseDelayMinutes = state.responseDelayMinutes
+        let pylonVerifiedMode = responseDelayMinutes > 0
+        let channel = pylonVerifiedMode
+            ? AppConfiguration.pylonVerifiedTwoMinuteChannel
+            : AppConfiguration.defaultChannel
+        var lastTimestamp = state.lastTimestamp(for: channel)
         let firstRunBaseline = String(format: "%.6f", Date().timeIntervalSince1970)
 
-        while state.isMonitoringEnabled && !Task.isCancelled {
+        while state.isMonitoringEnabled
+            && state.responseDelayMinutes == responseDelayMinutes
+            && !Task.isCancelled {
             if !authenticated {
                 do {
                     let identity = try await slack.authenticate(token: token)
@@ -417,7 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // Capture the baseline before authentication so a slow
                         // auth request cannot create a blind window.
                         lastTimestamp = firstRunBaseline
-                        state.setLastTimestamp(lastTimestamp!, for: AppConfiguration.channel)
+                        state.setLastTimestamp(lastTimestamp!, for: channel)
                         logger.info("First run: monitoring new messages from now")
                     }
                 } catch {
@@ -432,7 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let result = try await slack.fetchNewMessages(
                     token: token,
-                    channel: AppConfiguration.channel,
+                    channel: channel,
                     oldest: oldest,
                     maximumPages: AppConfiguration.maximumPages
                 )
@@ -443,61 +576,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           let timestamp = message["ts"] as? String else {
                         return
                     }
-                    let sender = SlackMessageParser.sender(message)
-                    let body = SlackMessageParser.messageText(message)
-                    let issue = SlackMessageParser.issueNumber(message)
-                    let link = SlackMessageParser.bestLink(
-                        message,
-                        channel: AppConfiguration.channel,
-                        workspaceURL: AppConfiguration.workspaceURL
-                    )
-                    var title = "Needs first touch — \(sender)"
-                    if let issue {
-                        title += " (#\(issue))"
-                    }
-                    let deliveryResult = await withCheckedContinuation { continuation in
-                        notifications.send(
-                            title: title,
-                            body: body,
-                            link: link,
-                            identifier: "help-center-ticket-\(timestamp)"
-                        ) { result in
-                            continuation.resume(returning: result)
-                        }
-                    }
-                    switch deliveryResult {
-                    case .success:
-                        logger.info("Notification delivered to macOS for \(sender, privacy: .public)")
-                    case .failure(let error):
-                        notificationsReady = false
-                        notificationStatusText = error.localizedDescription
-                        updateNotificationAppearance()
-                        logger.error(
-                            "System notification blocked; showing fallback: \(error.localizedDescription, privacy: .public)"
+                    if !pylonVerifiedMode || SlackMessageParser.isPylonSLABreach(message) {
+                        let sender = SlackMessageParser.sender(message)
+                        let body = SlackMessageParser.messageText(message)
+                        let issue = SlackMessageParser.pylonIssueNumber(message)
+                        let link = SlackMessageParser.bestLink(
+                            message,
+                            channel: channel,
+                            workspaceURL: AppConfiguration.workspaceURL
                         )
-                        showFallbackTicketAlert(title: title, body: body, link: link)
+                        await deliverTicketNotification(
+                            sender: sender,
+                            body: body,
+                            issue: issue,
+                            link: link,
+                            identifier: timestamp,
+                            mode: pylonVerifiedMode
+                                ? .pylonVerifiedTwoMinutes
+                                : .immediate
+                        )
+                        if pylonVerifiedMode {
+                            logger.info(
+                                "Pylon-verified SLA breach from \(sender, privacy: .public)"
+                            )
+                        } else {
+                            logger.info(
+                                "New immediate-mode customer message from \(sender, privacy: .public)"
+                            )
+                        }
+                    } else {
+                        logger.debug(
+                            "Ignored non-breach message in Pylon SLA channel at \(timestamp, privacy: .public)"
+                        )
                     }
-                    logger.info("New help-center ticket from \(sender, privacy: .public)")
-                    // Persist only after macOS accepted the notification or the
-                    // in-app fallback was shown. A crash before delivery will
-                    // therefore retry the ticket rather than silently lose it.
                     lastTimestamp = timestamp
-                    state.setLastTimestamp(timestamp, for: AppConfiguration.channel)
+                    state.setLastTimestamp(timestamp, for: channel)
                 }
 
                 if let floor = result.highestTimestamp,
                    timestampValue(floor) > timestampValue(lastTimestamp) {
                     lastTimestamp = floor
-                    state.setLastTimestamp(floor, for: AppConfiguration.channel)
+                    state.setLastTimestamp(floor, for: channel)
                 }
 
                 networkBackoff = 5
                 updateLastChecked()
-                setStatus("Monitoring")
+                setStatus(
+                    pylonVerifiedMode
+                        ? "Monitoring — Pylon-verified 2-minute SLA"
+                        : "Monitoring — immediate alerts"
+                )
                 logger.info(
                     "Slack poll completed; next check in \(Int(self.state.pollInterval)) seconds"
                 )
-                guard await pause(seconds: state.pollInterval) else { return }
+                guard await pause(seconds: self.state.pollInterval) else { return }
             } catch SlackClientError.rateLimited(let seconds) {
                 guard state.isMonitoringEnabled && !Task.isCancelled else { return }
                 setStatus("Rate limited — retrying in \(Int(seconds))s")
@@ -525,6 +657,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard await pause(seconds: networkBackoff) else { return }
                 networkBackoff = min(networkBackoff * 2, 60)
             }
+        }
+    }
+
+    private func deliverTicketNotification(
+        sender: String,
+        body: String,
+        issue: String?,
+        link: String,
+        identifier: String,
+        mode: TicketAlertMode
+    ) async {
+        var title = "Needs response — \(sender)"
+        if let issue {
+            title += " (#\(issue))"
+        }
+        let deliveryResult = await withCheckedContinuation { continuation in
+            notifications.send(
+                title: title,
+                body: body,
+                link: link,
+                identifier: "help-center-ticket-\(identifier)",
+                mode: mode
+            ) { result in
+                continuation.resume(returning: result)
+            }
+        }
+        switch deliveryResult {
+        case .success:
+            logger.info("Notification delivered to macOS for \(sender, privacy: .public)")
+        case .failure(let error):
+            notificationsReady = false
+            notificationStatusText = error.localizedDescription
+            updateNotificationAppearance()
+            logger.error(
+                "System notification blocked; showing fallback: \(error.localizedDescription, privacy: .public)"
+            )
+            showFallbackTicketAlert(title: title, body: body, link: link)
         }
     }
 
@@ -635,6 +804,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+    private func showInformation(title: String, message: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func setStatus(_ status: String) {
         currentStatus = status
         statusMenuItem.title = "Status: \(status)"
@@ -654,6 +833,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let enabled = state.isMonitoringEnabled
         enabledMenuItem.state = enabled ? .on : .off
         enabledMenuItem.title = enabled ? "Monitoring Enabled" : "Monitoring Disabled"
+        let responseDelay = state.responseDelayMinutes
+        responseDelayMenuItem.title = responseDelay == 0
+            ? "Alert Mode: Immediate"
+            : "Alert Mode: Pylon-Verified 2 Minutes"
+        verifyResponseMenuItem.isEnabled = responseDelay > 0
         let symbolName: String
         if !enabled {
             symbolName = "bell.slash"
@@ -699,6 +883,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateControlWindow() {
         controlWindowController?.update(
             enabled: state.isMonitoringEnabled,
+            responseDelayMinutes: state.responseDelayMinutes,
             status: currentStatus,
             lastChecked: lastCheckedText,
             slackCredentialStatus: slackCredentialStatusText,
@@ -708,6 +893,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             automaticStartStatus: automaticStartStatusText,
             automaticStartReady: automaticStartReady
         )
+    }
+
+    private var activeChannel: String {
+        state.responseDelayMinutes > 0
+            ? AppConfiguration.pylonVerifiedTwoMinuteChannel
+            : AppConfiguration.defaultChannel
+    }
+
+    private var currentAlertMode: TicketAlertMode {
+        state.responseDelayMinutes > 0
+            ? .pylonVerifiedTwoMinutes
+            : .immediate
     }
 
     private func showNotificationSetupAlert() {

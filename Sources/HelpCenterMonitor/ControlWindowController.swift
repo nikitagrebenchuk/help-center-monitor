@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HelpCenterCore
 
 @MainActor
 private final class GreenSwitch: NSControl {
@@ -113,12 +114,17 @@ private final class StatusCardView: NSView {
 @MainActor
 final class ControlWindowController: NSWindowController, NSWindowDelegate {
     private let onSetEnabled: (Bool) -> Void
+    private let onSetResponseDelay: (Int) -> Void
+    private let onVerifyPylonFeed: () -> Void
     private let onSendTest: () -> Void
     private let onOpenNotificationSettings: () -> Void
     private let onConfigureSlack: () -> Void
 
     private let monitoringSwitch = GreenSwitch()
     private let monitoringDetailLabel = NSTextField(labelWithString: "")
+    private let responseDelayDetailLabel = NSTextField(labelWithString: "")
+    private let responseModeControl = NSSegmentedControl()
+    private let responseVerificationButton = NSButton()
     private let monitoringDot = NSTextField(labelWithString: "●")
     private let slackValueLabel = NSTextField(labelWithString: "")
     private let lastCheckedLabel = NSTextField(labelWithString: "")
@@ -130,22 +136,27 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
     private let alertsValueLabel = NSTextField(labelWithString: "")
     private let notificationDetailLabel = NSTextField(wrappingLabelWithString: "")
     private let notificationSettingsButton = NSButton()
+    private let testButton = NSButton()
     private let automaticStartIcon = NSImageView()
     private let automaticStartLabel = NSTextField(labelWithString: "")
 
     init(
         onSetEnabled: @escaping (Bool) -> Void,
+        onSetResponseDelay: @escaping (Int) -> Void,
+        onVerifyPylonFeed: @escaping () -> Void,
         onSendTest: @escaping () -> Void,
         onOpenNotificationSettings: @escaping () -> Void,
         onConfigureSlack: @escaping () -> Void
     ) {
         self.onSetEnabled = onSetEnabled
+        self.onSetResponseDelay = onSetResponseDelay
+        self.onVerifyPylonFeed = onVerifyPylonFeed
         self.onSendTest = onSendTest
         self.onOpenNotificationSettings = onOpenNotificationSettings
         self.onConfigureSlack = onConfigureSlack
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 445),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 560),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -175,6 +186,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
 
     func update(
         enabled: Bool,
+        responseDelayMinutes: Int,
         status: String,
         lastChecked: String?,
         slackCredentialStatus: String,
@@ -184,10 +196,24 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         automaticStartStatus: String,
         automaticStartReady: Bool
     ) {
+        let delayedResponseEnabled = responseDelayMinutes > 0
         monitoringSwitch.state = enabled ? .on : .off
-        monitoringDetailLabel.stringValue = enabled
-            ? "Checks Slack every 30 seconds — alerts normally arrive within half a minute"
-            : "Paused — no Slack checks are being made"
+        responseModeControl.selectedSegment = delayedResponseEnabled ? 1 : 0
+        responseModeControl.setAccessibilityValue(
+            delayedResponseEnabled ? "Pylon verified 2 minutes" : "Immediate"
+        )
+        if !enabled {
+            monitoringDetailLabel.stringValue = "Paused — no Slack checks are being made"
+        } else if delayedResponseEnabled {
+            monitoringDetailLabel.stringValue = "Watches #wg-first-touch-monitor for Pylon's 2-minute SLA breaches"
+        } else {
+            monitoringDetailLabel.stringValue = "Watches #monitor-first-touch-missing and alerts immediately"
+        }
+        responseDelayDetailLabel.stringValue = delayedResponseEnabled
+            ? "Pylon decides whether first or next response missed the SLA"
+            : "Alert on every new customer-message event"
+        responseVerificationButton.isEnabled = delayedResponseEnabled
+        testButton.title = delayedResponseEnabled ? "Send Pylon 2-Minute Test" : "Send Test Alert"
 
         let normalizedStatus = status.lowercased()
         let slackHealthy = enabled && normalizedStatus.contains("monitoring")
@@ -242,7 +268,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
 
         let descriptionLabel = NSTextField(
-            wrappingLabelWithString: "Never miss a support message that needs a first touch."
+            wrappingLabelWithString: "Never miss a customer message waiting for our response."
         )
         descriptionLabel.font = .systemFont(ofSize: 13)
         descriptionLabel.textColor = .secondaryLabelColor
@@ -279,6 +305,45 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         monitoringRow.orientation = .horizontal
         monitoringRow.alignment = .centerY
         monitoringRow.distribution = .fill
+
+        let responseDelayTitle = NSTextField(labelWithString: "Alert mode")
+        responseDelayTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        responseDelayDetailLabel.font = .systemFont(ofSize: 11)
+        responseDelayDetailLabel.textColor = .secondaryLabelColor
+        responseDelayDetailLabel.maximumNumberOfLines = 2
+
+        let responseDelayText = NSStackView(views: [
+            responseDelayTitle,
+            responseDelayDetailLabel,
+        ])
+        responseDelayText.orientation = .vertical
+        responseDelayText.alignment = .leading
+        responseDelayText.spacing = 3
+
+        responseModeControl.segmentCount = 2
+        responseModeControl.setLabel("Immediate", forSegment: 0)
+        responseModeControl.setLabel("Pylon 2 min", forSegment: 1)
+        responseModeControl.trackingMode = .selectOne
+        responseModeControl.selectedSegment = 0
+        responseModeControl.controlSize = .regular
+        responseModeControl.target = self
+        responseModeControl.action = #selector(responseModeChanged)
+        responseModeControl.setAccessibilityLabel("Alert mode")
+        responseModeControl.setContentHuggingPriority(.required, for: .horizontal)
+        responseModeControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        responseModeControl.translatesAutoresizingMaskIntoConstraints = false
+
+        let responseDelayRow = NSStackView(views: [responseDelayText, responseModeControl])
+        responseDelayRow.orientation = .horizontal
+        responseDelayRow.alignment = .centerY
+        responseDelayRow.distribution = .fill
+        responseDelayRow.spacing = 16
+
+        responseVerificationButton.title = "Verify Pylon 2-Minute Feed"
+        responseVerificationButton.target = self
+        responseVerificationButton.action = #selector(verifyPylonFeed)
+        responseVerificationButton.bezelStyle = .rounded
+        responseVerificationButton.controlSize = .small
 
         monitoringDot.font = .systemFont(ofSize: 10)
         credentialsDot.font = .systemFont(ofSize: 10)
@@ -346,6 +411,8 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         let thirdDivider = makeDivider()
         let cardStack = NSStackView(views: [
             monitoringRow,
+            responseDelayRow,
+            responseVerificationButton,
             firstDivider,
             slackRow,
             lastCheckedLabel,
@@ -361,17 +428,16 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         cardStack.alignment = .leading
         cardStack.spacing = 9
         cardStack.setCustomSpacing(13, after: monitoringRow)
+        cardStack.setCustomSpacing(13, after: responseDelayRow)
         cardStack.setCustomSpacing(13, after: firstDivider)
         cardStack.setCustomSpacing(13, after: secondDivider)
         cardStack.setCustomSpacing(13, after: thirdDivider)
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(cardStack)
 
-        let testButton = NSButton(
-            title: "Send Test Alert",
-            target: self,
-            action: #selector(sendTest)
-        )
+        testButton.title = "Send Test Alert"
+        testButton.target = self
+        testButton.action = #selector(sendTest)
         testButton.bezelStyle = .rounded
         testButton.controlSize = .large
         testButton.image = NSImage(
@@ -422,6 +488,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
             cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
             cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -15),
             monitoringRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            responseDelayRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             slackRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             credentialsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             alertsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
@@ -433,6 +500,9 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
 
             monitoringSwitch.widthAnchor.constraint(equalToConstant: 42),
             monitoringSwitch.heightAnchor.constraint(equalToConstant: 24),
+            responseModeControl.widthAnchor.constraint(equalToConstant: 184),
+            responseModeControl.heightAnchor.constraint(equalToConstant: 28),
+            responseDelayRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
             actions.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor),
         ])
     }
@@ -447,6 +517,18 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func monitoringSwitchChanged() {
         onSetEnabled(monitoringSwitch.state == .on)
+    }
+
+    @objc private func responseModeChanged() {
+        onSetResponseDelay(
+            responseModeControl.selectedSegment == 1
+                ? MonitorState.pylonVerifiedResponseDelayMinutes
+                : 0
+        )
+    }
+
+    @objc private func verifyPylonFeed() {
+        onVerifyPylonFeed()
     }
 
     @objc private func sendTest() {

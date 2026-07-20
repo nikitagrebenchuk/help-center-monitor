@@ -29,6 +29,10 @@ public enum SlackMessageParser {
         pattern: #"Issue #(\d+)"#,
         options: [.caseInsensitive]
     )
+    private static let pylonIssue = try! NSRegularExpression(
+        pattern: #"#(\d+)"#,
+        options: []
+    )
     private static let whitespace = try! NSRegularExpression(
         pattern: #"\s+"#,
         options: []
@@ -99,6 +103,32 @@ public enum SlackMessageParser {
         return String(text[numberRange])
     }
 
+    public static func pylonIssueNumber(_ message: [String: Any]) -> String? {
+        if let number = issueNumber(message) {
+            return number
+        }
+        var text: [String] = []
+        if let attachments = message["attachments"] {
+            collectText(from: attachments, into: &text)
+        }
+        if let blocks = message["blocks"] {
+            collectText(from: blocks, into: &text)
+        }
+        let combined = text.joined(separator: " ")
+        let range = NSRange(combined.startIndex..<combined.endIndex, in: combined)
+        guard let match = pylonIssue.firstMatch(in: combined, options: [], range: range),
+              match.numberOfRanges > 1,
+              let numberRange = Range(match.range(at: 1), in: combined) else {
+            return nil
+        }
+        return String(combined[numberRange])
+    }
+
+    public static func isPylonSLABreach(_ message: [String: Any]) -> Bool {
+        issueNumber(message) != nil
+            && messageText(message).localizedCaseInsensitiveContains("SLA breached")
+    }
+
     public static func isTopLevelTicket(_ message: [String: Any]) -> Bool {
         guard let timestamp = nonEmptyString(message["ts"]) else { return false }
         if let subtype = message["subtype"] as? String, ignoredSubtypes.contains(subtype) {
@@ -125,6 +155,9 @@ public enum SlackMessageParser {
 
         if let slackURL = urls.first(where: { $0.contains("slack.com/archives") }) {
             return slackURL
+        }
+        if let teamsURL = urls.first(where: { $0.contains("teams.microsoft.com/") }) {
+            return teamsURL.replacingOccurrences(of: "&amp;", with: "&")
         }
         if let pylonURL = urls.first(where: {
             $0.localizedCaseInsensitiveContains("pylon") || $0.contains("usepylon.com")

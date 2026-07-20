@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HelpCenterCore
 import UserNotifications
 
 struct NotificationPermissionStatus {
@@ -30,13 +31,12 @@ enum NotificationDeliveryError: LocalizedError {
 }
 
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSSpeechSynthesizerDelegate {
-    private static let spokenAlert = "New ticket in help-center"
     private static let glassSoundPath = "/System/Library/Sounds/Glass.aiff"
 
     private let center = UNUserNotificationCenter.current()
     private var attentionSound: NSSound?
     private var speechSynthesizer: NSSpeechSynthesizer?
-    private var queuedAttentionAlerts = 0
+    private var queuedAttentionAlerts: [String] = []
     private var isSpeakingAttentionAlert = false
     var onStatusChange: ((NotificationPermissionStatus) -> Void)?
     var onDeliveryError: ((String) -> Void)?
@@ -86,9 +86,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         body: String,
         link: String?,
         identifier: String,
+        mode: TicketAlertMode,
         completion: @escaping (Result<Void, NotificationDeliveryError>) -> Void
     ) {
-        playAttentionAlert()
+        playAttentionAlert(spokenMessage: mode.spokenAnnouncement)
         currentStatus { [weak self] status in
             guard let self else { return }
             self.report(status)
@@ -125,12 +126,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         }
     }
 
-    func sendTest(completion: @escaping (Result<Void, NotificationDeliveryError>) -> Void) {
+    func sendTest(
+        mode: TicketAlertMode,
+        completion: @escaping (Result<Void, NotificationDeliveryError>) -> Void
+    ) {
         send(
-            title: "Help Center Monitor",
-            body: "Test notification — alerts are working.",
+            title: mode.testTitle,
+            body: mode.testBody,
             link: nil,
             identifier: "help-center-monitor-test-\(UUID().uuidString)",
+            mode: mode,
             completion: completion
         )
     }
@@ -202,17 +207,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         onStatusChange?(status)
     }
 
-    private func playAttentionAlert() {
+    private func playAttentionAlert(spokenMessage: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.queuedAttentionAlerts += 1
+            self.queuedAttentionAlerts.append(spokenMessage)
             self.playNextAttentionAlertIfNeeded()
         }
     }
 
     private func playNextAttentionAlertIfNeeded() {
-        guard !isSpeakingAttentionAlert, queuedAttentionAlerts > 0 else { return }
-        queuedAttentionAlerts -= 1
+        guard !isSpeakingAttentionAlert, !queuedAttentionAlerts.isEmpty else { return }
+        let spokenMessage = queuedAttentionAlerts.removeFirst()
 
         if attentionSound == nil {
             attentionSound = NSSound(
@@ -229,7 +234,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
             speechSynthesizer?.volume = 1.0
             speechSynthesizer?.delegate = self
         }
-        isSpeakingAttentionAlert = speechSynthesizer?.startSpeaking(Self.spokenAlert) == true
+        isSpeakingAttentionAlert = speechSynthesizer?.startSpeaking(spokenMessage) == true
         if !isSpeakingAttentionAlert {
             DispatchQueue.main.async { [weak self] in
                 self?.playNextAttentionAlertIfNeeded()

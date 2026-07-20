@@ -1,7 +1,8 @@
 # Help Center Monitor
 
-A native macOS menu-bar application that alerts support teammates when a new
-ticket appears in Slack's `#monitor-first-touch-missing` channel.
+A native macOS menu-bar application that alerts support teammates either when a
+new customer-message event appears or when Pylon reports that a two-minute first
+or next response SLA was breached.
 
 After the one-time installation, the user does not run Python or Terminal
 commands. A macOS login item starts the app automatically whenever the user logs
@@ -11,11 +12,14 @@ turn Slack polling on or off.
 ## Employee experience
 
 Employees must not clone this repository or run any script. They receive one
-signed and notarized `Help Center Monitor.dmg` file:
+`Help Center Monitor.dmg` file:
 
 1. Open the DMG.
-2. Drag the app to Applications and open it once.
-3. Allow macOS notifications.
+2. Drag the app to Applications and attempt to open it once.
+3. For the current unsigned internal build, click **Done** in Gatekeeper, use
+   the DMG's **2 - After Warning - Open Privacy & Security** shortcut, then
+   choose **Open Anyway → Open**.
+4. Allow macOS notifications.
 
 That is the intended production experience. The current local preview still
 needs a one-time Slack credential; it now collects that credential inside the
@@ -28,16 +32,22 @@ control window or the menu-bar enable/disable item. Give employees
 
 ## What the application does
 
-- Watches `#monitor-first-touch-missing` (`C0BHCB96XM5`) every 30 seconds under
-  normal, non-rate-limited conditions.
+- Uses one **Monitoring** switch and a two-choice **Alert mode** control.
+- **Immediate** watches `#monitor-first-touch-missing` (`C0BHCB96XM5`) and
+  alerts on every new customer-message event.
+- **Pylon 2 min** watches `#wg-first-touch-monitor` (`C0BD2LDGYSZ`) and alerts
+  only on Pylon's verified two-minute SLA-breach events. Pylon determines both
+  first-response and next-response breaches.
 - Alerts only on new top-level messages, not thread replies or channel events.
 - Shows the customer and issue number in a native macOS notification.
-- Plays the original, distinctive macOS **Glass** sound at full volume and
-  announces **“New ticket in help-center”** for every ticket (including test
-  alerts). Multiple alerts are queued so their speech does not interrupt itself.
+- Plays the original, distinctive macOS **Glass** sound at full volume.
+  Immediate mode announces **“New ticket in help-center”**; Pylon mode announces
+  **“Help Center message unanswered for 2 minutes.”** Multiple alerts are queued
+  so speech does not interrupt itself.
 - Shows a direct in-app fallback alert if macOS notification permission is
   blocked, so a detected ticket is never silently discarded.
-- Opens the most useful Slack/Pylon link when the notification is clicked.
+- Opens the customer Slack or Microsoft Teams link when available, with Pylon
+  and the feed message as fallbacks.
 - Remembers the last-seen Slack timestamp across restarts and sleep/wake cycles.
 - Rechecks immediately when the Mac wakes or the user session becomes active.
 - Stores the Slack bot token in macOS Keychain, never in the app bundle.
@@ -51,14 +61,51 @@ The app reuses a token already stored under the existing Keychain service name
 need to enter the token again. It also imports the last-seen timestamp from
 `~/.help-center-monitor-state.json` the first time it starts.
 
+## Alert modes: Immediate or Pylon 2 min
+
+Keep **Monitoring** enabled, then choose one mode:
+
+- **Immediate:** reads only `#monitor-first-touch-missing` and alerts for every
+  new top-level customer-message event.
+- **Pylon 2 min:** reads only `#wg-first-touch-monitor` and alerts for every
+  top-level Pylon event containing an issue number and **SLA breached**. The app
+  does not independently decide whether a teammate replied.
+
+The two-minute channel is the source of truth. In this mode the app never reads
+`#help-center`, a customer Slack channel, a Microsoft Teams conversation, or a
+Pylon Assignee field. This avoids treating customer follow-ups, customer
+self-replies, or unrelated assignment changes as an Upwind response. It also
+means the app handles first-response and next-response breaches identically and
+can alert for Pylon-managed Teams tickets without reading Teams.
+
+Switching modes starts the newly selected feed from the current time, preventing
+historical backlog alerts. Disabling Monitoring also skips messages received
+while disabled. Retired locally queued assignee-based checks are removed during
+the one-time migration.
+
+### Verify the Pylon feed
+
+Select **Pylon 2 min**, then click **Verify Pylon 2-Minute Feed** in the control
+window or menu-bar menu. The read-only check:
+
+1. Reads a bounded recent sample from `#wg-first-touch-monitor` using the
+   Monitoring Bot.
+2. Confirms that a real Pylon issue/SLA-breach event is present.
+3. Sends a labeled Pylon two-minute test notification with the production Glass
+   sound and spoken announcement.
+
+It does not post to Slack or inspect `#help-center`, Pylon assignees, customer
+channels, or customer threads.
+
 ## Latency, credentials, and permissions
 
 The local preview polls immediately at startup, then waits 30 seconds between
-successful checks. A new message therefore takes 0–30 seconds to be noticed
-under normal conditions—about 15 seconds on average—plus Slack/network response
-time. A Slack rate limit, sleep, or network outage can make this longer. The
-panel states the normal interval instead of implying that the connection is
-real-time.
+successful checks. An event in either source feed therefore takes 0–30 seconds
+to be noticed under normal conditions—about 15 seconds on average—plus
+Slack/network response time. For Pylon mode, this polling latency begins after
+Pylon creates its two-minute breach event. A Slack rate limit, sleep, or network
+outage can make this longer. The panel states the normal interval instead of
+implying that the connection is real-time.
 
 The token is never hard-coded or written to preferences. The in-app secure
 field creates a generic password in macOS Keychain with
@@ -114,6 +161,10 @@ after confirming the new app works; otherwise both monitors will poll Slack.
 ## Menu-bar controls
 
 - **Monitoring Enabled / Disabled** — the main on/off toggle.
+- **Alert Mode: Immediate / Pylon-Verified 2 Minutes** — opens the control panel
+  to switch the trusted source feed.
+- **Verify Pylon 2-Minute Feed…** — available in Pylon mode and validates the
+  real source feed before sending a labeled local test alert.
 - **Status** — authentication, connectivity, rate-limit, or configuration state.
 - **Last checked** — time of the most recent successful Slack check.
 - **Notifications Enabled / Fix Notifications…** — reports macOS permission
@@ -150,11 +201,12 @@ Run the offline core checks:
 ```
 
 The checks cover Slack markdown cleanup, attachment fallback text, issue and
-sender extraction, reply/event filtering, deep-link selection, enablement state,
-last-seen timestamp persistence, and recovery of multi-page Slack history after
-a mocked HTTP 429. They also verify the Command+V Paste menu contract and the
-notification-versus-ordinary-reopen state machine. They never read the real
-Keychain token or call Slack.
+sender extraction, reply/event filtering, Pylon SLA-breach recognition,
+Slack/Teams/Pylon deep-link selection, migration to the two supported modes,
+per-channel last-seen persistence, bounded Pylon-feed verification, and recovery
+of multi-page Slack history after a mocked HTTP 429. They also verify the
+Command+V Paste menu contract and the notification-versus-ordinary-reopen state
+machine. They never read the real Keychain token or call Slack.
 
 If a local Command Line Tools installation contains mismatched Swift and SDK
 versions, select a compatible installed SDK explicitly:
@@ -172,10 +224,15 @@ Create the employee-facing drag-and-drop DMG:
 ./scripts/package_dmg.sh
 ```
 
-The default DMG is a development preview. Do not give that ad-hoc-signed build
-to employees because Gatekeeper will add avoidable warning dialogs. Before
-distribution, sign the app with an Apple Developer ID and notarize the DMG so
-macOS can verify it without workarounds:
+Without an Apple Developer ID, the default DMG is ad-hoc signed. Distribute it
+only through a trusted internal channel. Each teammate must approve it once in
+**System Settings → Privacy & Security**; the DMG includes a shortcut that opens
+that pane directly after the required first launch attempt. See
+[EMPLOYEE_INSTALL.md](EMPLOYEE_INSTALL.md) for the exact flow. A newly rebuilt
+unsigned version may require approval again.
+
+If Developer ID access becomes available later, sign the app and notarize the
+DMG to remove the Gatekeeper approval steps:
 
 ```bash
 HCM_SIGN_IDENTITY="Developer ID Application: Your Company (TEAMID)" \
@@ -208,7 +265,12 @@ Help Center Monitor.app
 The installed app registers itself with Apple's `SMAppService.mainApp`. It is a
 single process: Spotlight reopening, the control window, menu-bar item,
 notifications, and monitoring loop all belong to the same application. Version
-0.4.3 includes the recognizable support-alert icon, compact status-card UI,
+0.7.0 replaces the locally inferred 1–10 minute assignee check with two explicit
+source feeds: immediate events and Pylon-verified two-minute first/next-response
+SLA breaches. It removes old pending timers during migration and never reads
+`#help-center` or customer threads in Pylon mode. Version 0.6.3 added a native
+Internet Location for the one-click Privacy & Security shortcut in unsigned
+internal DMGs. The app also includes the recognizable support-alert icon, compact status-card UI,
 correctly sized toggle, 30-second polling, visible credential and real login-item
 readiness, in-app Keychain setup, persistent notification-permission guidance,
 queued Glass/speech alerts, rate-aware pagination, and the spoken “New ticket in
@@ -222,7 +284,7 @@ during migration.
 - A local app cannot alert while the Mac is powered off or fully asleep. Messages
   that arrive during sleep are found after wake.
 - Slack can limit `conversations.history` for some app installations to roughly
-  one request per minute. Version 0.4.3 attempts the requested 30-second
+  one request per minute. The app attempts the requested 30-second
   interval, honors HTTP 429 `Retry-After`, and preserves pagination progress;
   the effective interval can therefore be 60 seconds or longer on that tier.
 - Several users running separate local copies with the same Slack app can share

@@ -1,7 +1,8 @@
 import Foundation
 
 enum AppConfiguration {
-    static let channel = "C0BHCB96XM5"
+    static let defaultChannel = "C0BHCB96XM5"
+    static let pylonVerifiedTwoMinuteChannel = "C0BD2LDGYSZ"
     static let workspaceURL = "https://upwindsecurity.slack.com"
     static let slackAPIBase = "https://slack.com/api"
     static let keychainService = "help-center-monitor"

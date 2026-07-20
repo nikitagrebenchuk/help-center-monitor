@@ -4,16 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/Help Center Monitor.app"
 STAGING="$ROOT/.build/dmg-root"
+PRIVACY_SECURITY_SHORTCUT="$ROOT/Resources/Open Privacy & Security.inetloc"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist")"
 DMG="$ROOT/dist/Help Center Monitor-$VERSION.dmg"
 
 "$ROOT/scripts/build_app.sh"
+plutil -lint "$PRIVACY_SECURITY_SHORTCUT"
 
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 ditto "$APP" "$STAGING/Help Center Monitor.app"
 ln -s /Applications "$STAGING/Applications"
-install -m 644 "$ROOT/TEAM_INSTALL.txt" "$STAGING/Install Help Center Monitor.txt"
+install -m 644 \
+  "$PRIVACY_SECURITY_SHORTCUT" \
+  "$STAGING/2 - After Warning - Open Privacy & Security.inetloc"
+install -m 644 "$ROOT/TEAM_INSTALL.txt" "$STAGING/Read Me First.txt"
 
 rm -f "$DMG" "$DMG.sha256"
 hdiutil create \
@@ -47,5 +52,5 @@ fi
 
 echo "Packaged: $DMG"
 if [[ -z "${HCM_SIGN_IDENTITY:-}" ]]; then
-  echo "Development preview only: set HCM_SIGN_IDENTITY and HCM_NOTARY_PROFILE for employee distribution."
+  echo "Unsigned internal build: distribute only through a trusted channel; recipients must approve it in Privacy & Security."
 fi

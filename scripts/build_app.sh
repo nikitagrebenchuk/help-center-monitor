@@ -17,11 +17,19 @@ fi
 BINARIES=()
 for ARCH in arm64 x86_64; do
   BUILD_ROOT="$ROOT/.build-$ARCH"
+  WORKSPACE_MARKER="$BUILD_ROOT/.workspace-path"
+  if [[ ! -f "$WORKSPACE_MARKER" ]] || [[ "$(<"$WORKSPACE_MARKER")" != "$ROOT" ]]; then
+    # Swift's precompiled module cache embeds the absolute workspace path.
+    # Discard only build artifacts when a checkout has moved; otherwise the
+    # compiler fails before it can rebuild the manifest.
+    rm -rf "$BUILD_ROOT"
+  fi
   mkdir -p \
     "$BUILD_ROOT/cache" \
     "$BUILD_ROOT/config" \
     "$BUILD_ROOT/security" \
     "$BUILD_ROOT/clang-module-cache"
+  print -r -- "$ROOT" > "$WORKSPACE_MARKER"
   export CLANG_MODULE_CACHE_PATH="$BUILD_ROOT/clang-module-cache"
 
   SWIFT_ARGS=(

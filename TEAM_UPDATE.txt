@@ -1,0 +1,29 @@
+Updating Help Center Monitor
+============================
+
+Use this short guide if you installed the older version with the Terminal
+commands and already have the help-center-monitor folder in your home folder.
+
+1. Open Terminal, paste this whole block, and press Return:
+
+cd "$HOME/help-center-monitor"
+git pull --ff-only
+./scripts/install_app.sh
+
+The update may take several minutes. It closes the old version, replaces it in
+the same Applications location, and opens the new version automatically.
+
+2. Confirm that:
+
+- Terminal ends with "Installed: ... (version 0.8.4)"
+- the app says Monitoring and watches #help-center and #dispatcher
+- Send Test Alert produces a notification
+
+That's all. Do not retrieve or paste the Slack token again, and do not repeat
+the Notifications or Login Items setup. The update keeps the existing Keychain
+token, notification permission, and installed-app path.
+
+If the app shows a red Needs attention row, use the button beside that row or
+contact the release owner. If Terminal says the help-center-monitor folder does
+not exist or git reports local changes, stop and contact the release owner
+instead of deleting or cloning over anything.

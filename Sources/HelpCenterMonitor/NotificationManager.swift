@@ -30,14 +30,28 @@ enum NotificationDeliveryError: LocalizedError {
     }
 }
 
-final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSSpeechSynthesizerDelegate {
+final class NotificationManager: NSObject,
+    UNUserNotificationCenterDelegate,
+    NSSpeechSynthesizerDelegate,
+    NSSoundDelegate {
     private static let glassSoundPath = "/System/Library/Sounds/Glass.aiff"
+    private static let teamVoicesDirectoryName = "TeamVoices"
+    private static let supportedTeamVoiceExtensions = Set([
+        "aif", "aiff", "caf", "m4a", "mp3", "wav",
+    ])
+
+    private struct QueuedAttentionAlert {
+        let spokenMessage: String
+        let usesTeamVoice: Bool
+    }
 
     private let center = UNUserNotificationCenter.current()
     private var attentionSound: NSSound?
+    private var teamVoiceSound: NSSound?
     private var speechSynthesizer: NSSpeechSynthesizer?
-    private var queuedAttentionAlerts: [String] = []
-    private var isSpeakingAttentionAlert = false
+    private var queuedAttentionAlerts: [QueuedAttentionAlert] = []
+    private var isPlayingAttentionAlert = false
+    private var lastTeamVoiceURL: URL?
     var onStatusChange: ((NotificationPermissionStatus) -> Void)?
     var onDeliveryError: ((String) -> Void)?
     var onNotificationSelected: ((URL?) -> Void)?
@@ -45,6 +59,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
     override init() {
         super.init()
         center.delegate = self
+    }
+
+    var availableTeamVoiceCount: Int {
+        teamVoiceURLs.count
     }
 
     func requestAuthorization(completion: @escaping (NotificationPermissionStatus) -> Void) {
@@ -87,9 +105,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         link: String?,
         identifier: String,
         mode: TicketAlertMode,
+        usesTeamVoice: Bool,
         completion: @escaping (Result<Void, NotificationDeliveryError>) -> Void
     ) {
-        playAttentionAlert(spokenMessage: mode.spokenAnnouncement)
+        playAttentionAlert(
+            spokenMessage: mode.spokenAnnouncement,
+            usesTeamVoice: usesTeamVoice
+        )
         currentStatus { [weak self] status in
             guard let self else { return }
             self.report(status)
@@ -128,6 +150,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
 
     func sendTest(
         mode: TicketAlertMode,
+        usesTeamVoice: Bool,
         completion: @escaping (Result<Void, NotificationDeliveryError>) -> Void
     ) {
         send(
@@ -136,6 +159,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
             link: nil,
             identifier: "help-center-monitor-test-\(UUID().uuidString)",
             mode: mode,
+            usesTeamVoice: usesTeamVoice,
             completion: completion
         )
     }
@@ -207,17 +231,22 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         onStatusChange?(status)
     }
 
-    private func playAttentionAlert(spokenMessage: String) {
+    private func playAttentionAlert(spokenMessage: String, usesTeamVoice: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.queuedAttentionAlerts.append(spokenMessage)
+            self.queuedAttentionAlerts.append(
+                QueuedAttentionAlert(
+                    spokenMessage: spokenMessage,
+                    usesTeamVoice: usesTeamVoice
+                )
+            )
             self.playNextAttentionAlertIfNeeded()
         }
     }
 
     private func playNextAttentionAlertIfNeeded() {
-        guard !isSpeakingAttentionAlert, !queuedAttentionAlerts.isEmpty else { return }
-        let spokenMessage = queuedAttentionAlerts.removeFirst()
+        guard !isPlayingAttentionAlert, !queuedAttentionAlerts.isEmpty else { return }
+        let alert = queuedAttentionAlerts.removeFirst()
 
         if attentionSound == nil {
             attentionSound = NSSound(
@@ -229,24 +258,82 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, NSS
         attentionSound?.stop()
         attentionSound?.play()
 
+        if alert.usesTeamVoice, playRandomTeamVoice() {
+            return
+        }
+
+        playSystemVoice(alert.spokenMessage)
+    }
+
+    private func playRandomTeamVoice() -> Bool {
+        let urls = teamVoiceURLs
+        guard !urls.isEmpty else { return false }
+        let candidates: [URL]
+        if urls.count > 1, let lastTeamVoiceURL {
+            candidates = urls.filter { $0 != lastTeamVoiceURL }
+        } else {
+            candidates = urls
+        }
+        guard let url = candidates.randomElement(),
+              let sound = NSSound(contentsOf: url, byReference: true) else {
+            return false
+        }
+        sound.volume = 1.0
+        sound.delegate = self
+        teamVoiceSound = sound
+        lastTeamVoiceURL = url
+        isPlayingAttentionAlert = sound.play()
+        if !isPlayingAttentionAlert {
+            teamVoiceSound = nil
+        }
+        return isPlayingAttentionAlert
+    }
+
+    private func playSystemVoice(_ spokenMessage: String) {
+
         if speechSynthesizer == nil {
             speechSynthesizer = NSSpeechSynthesizer(voice: nil)
             speechSynthesizer?.volume = 1.0
             speechSynthesizer?.delegate = self
         }
-        isSpeakingAttentionAlert = speechSynthesizer?.startSpeaking(spokenMessage) == true
-        if !isSpeakingAttentionAlert {
+        isPlayingAttentionAlert = speechSynthesizer?.startSpeaking(spokenMessage) == true
+        if !isPlayingAttentionAlert {
             DispatchQueue.main.async { [weak self] in
                 self?.playNextAttentionAlertIfNeeded()
             }
         }
     }
 
+    private var teamVoiceURLs: [URL] {
+        guard let resourcesURL = Bundle.main.resourceURL else { return [] }
+        let directoryURL = resourcesURL.appendingPathComponent(
+            Self.teamVoicesDirectoryName,
+            isDirectory: true
+        )
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return urls
+            .filter { Self.supportedTeamVoiceExtensions.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
     func speechSynthesizer(
         _ sender: NSSpeechSynthesizer,
         didFinishSpeaking finishedSpeaking: Bool
     ) {
-        isSpeakingAttentionAlert = false
+        isPlayingAttentionAlert = false
+        playNextAttentionAlertIfNeeded()
+    }
+
+    func sound(_ sound: NSSound, didFinishPlaying flag: Bool) {
+        guard sound === teamVoiceSound else { return }
+        teamVoiceSound = nil
+        isPlayingAttentionAlert = false
         playNextAttentionAlertIfNeeded()
     }
 }

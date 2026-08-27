@@ -6,9 +6,11 @@ Do this once. You do not need Terminal, Python, or source code.
 Before you start
 ----------------
 - macOS 13 or newer
-- The Slack token sent separately through the company password manager or
-  approved secret-sharing tool
+- The standard AWS CLI and an active prod-read-only SSO session on the managed
+  Mac
 
+The app loads Slack access automatically. If that fails, obtain the fallback
+token through the company password manager or approved secret-sharing tool.
 Never put the token in email or an ordinary Slack message.
 
 Install
@@ -25,15 +27,11 @@ Install
    If the app opened normally in step 2, skip steps 3 through 5.
 6. Eject this disk image.
 7. Click Allow when macOS asks about notifications.
-8. Paste the separately supplied token into the secure setup box with Command+V,
-   then click Save. If needed, click Set Up Slack Access first.
-9. Make sure the Monitoring switch is green and on. Choose Immediate for every
-   new customer-message event, or Pylon 2 min for only Pylon's verified
-   two-minute first/next-response SLA breaches.
-
-With Pylon 2 min selected, use Verify Pylon 2-Minute Feed to run a read-only
-source check and send a labeled two-minute test alert without posting to Slack.
-The app does not inspect customer channels, #help-center, or Pylon assignees.
+8. Wait while the app loads Slack access automatically from AWS Secrets Manager.
+   Only if the secure fallback box appears, paste the separately supplied token
+   with Command+V, then click Save.
+9. Make sure the Monitoring switch is green and on. Confirm the panel says it
+   watches #help-center and #dispatcher.
 
 The Privacy & Security approval is required once for this internal unsigned
 build. A newly rebuilt version may require the same approval again.
@@ -50,7 +48,10 @@ Login Items. Return to the app and confirm the bottom line is green.
 Turn up the Mac's output volume and click Send Test Alert. Expect:
 - a notification banner
 - the Glass alert sound
-- the spoken words: "New ticket in help-center"
+- the spoken words: "New message in the alert channel"
+
+Optional: enable Team voice-overs in the app, then click Test Team Voice Alert.
+The spoken words should be replaced by a randomly selected teammate recording.
 
 Done
 ----

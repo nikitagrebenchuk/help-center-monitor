@@ -1,11 +1,26 @@
 import Foundation
 
+struct MonitoredSlackChannel {
+    let id: String
+    let name: String
+
+    var displayName: String { "#\(name)" }
+}
+
 enum AppConfiguration {
-    static let defaultChannel = "C0BHCB96XM5"
-    static let pylonVerifiedTwoMinuteChannel = "C0BD2LDGYSZ"
+    static let monitoredChannels = [
+        MonitoredSlackChannel(id: "C07ES26GU2D", name: "help-center"),
+        MonitoredSlackChannel(id: "C0BJLB6NYQ7", name: "dispatcher"),
+    ]
+    static let monitoredChannelSummary = monitoredChannels
+        .map(\.displayName)
+        .joined(separator: " and ")
     static let workspaceURL = "https://upwindsecurity.slack.com"
     static let slackAPIBase = "https://slack.com/api"
     static let keychainService = "help-center-monitor"
+    static let awsSecretID = "/production/monitoring/help-center-monitor"
+    static let awsRegion = "us-east-1"
+    static let awsProfile = "prod-read-only"
     static let maximumPages = 500
     static let legacyAgentPlistName = "io.upwind.help-center-monitor.agent.plist"
 

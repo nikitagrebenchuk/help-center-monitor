@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HelpCenterAWS
 import HelpCenterCore
 import HelpCenterSlack
 import HelpCenterUI
@@ -11,6 +12,59 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         failures += 1
         FileHandle.standardError.write(Data("FAIL: \(message)\n".utf8))
     }
+}
+
+expect(
+    AWSSecretsManagerTokenProvider.token(fromSecretString: "  xoxb-plain-test-token  ")
+        == "xoxb-plain-test-token",
+    "AWS plain-text secret yields the Slack bot token"
+)
+expect(
+    AWSSecretsManagerTokenProvider.token(
+        fromSecretString: #"{"SLACK_BOT_TOKEN":"xoxb-json-test-token"}"#
+    ) == "xoxb-json-test-token",
+    "AWS JSON secret yields the Slack bot token"
+)
+expect(
+    AWSSecretsManagerTokenProvider.token(
+        fromSecretString: #"{"monitoring":{"credential":"xoxb-nested-test-token"}}"#
+    ) == "xoxb-nested-test-token",
+    "AWS nested JSON secret yields the Slack bot token"
+)
+expect(
+    AWSSecretsManagerTokenProvider.token(fromSecretString: "xoxp-not-a-bot-token") == nil,
+    "AWS secret rejects non-bot Slack tokens"
+)
+
+let awsFixtureDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("HelpCenterAWSFixture-\(UUID().uuidString)", isDirectory: true)
+defer { try? FileManager.default.removeItem(at: awsFixtureDirectory) }
+do {
+    try FileManager.default.createDirectory(
+        at: awsFixtureDirectory,
+        withIntermediateDirectories: true
+    )
+    let executable = awsFixtureDirectory.appendingPathComponent("aws")
+    try Data(
+        "#!/bin/zsh\nprint -r -- '{\"SLACK_BOT_TOKEN\":\"xoxb-process-test-token\"}'\n".utf8
+    ).write(to: executable)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: executable.path
+    )
+    let provider = AWSSecretsManagerTokenProvider(
+        secretID: "/test/secret",
+        region: "us-east-1",
+        profile: "test-profile",
+        executableCandidates: [executable]
+    )
+    let fetchedToken = try provider.fetchToken()
+    expect(
+        fetchedToken == "xoxb-process-test-token",
+        "AWS CLI subprocess output is loaded without exposing the token"
+    )
+} catch {
+    expect(false, "AWS CLI subprocess fixture succeeds: \(error)")
 }
 
 let markdown = ":rotating_light: *Issue #11459* <https://example.com|View in Slack> <@U123> customer_name"
@@ -61,13 +115,8 @@ expect(
     "ignored subtype is rejected"
 )
 expect(
-    TicketAlertMode.immediate.spokenAnnouncement == "New ticket in help-center",
-    "default monitoring keeps its original spoken announcement"
-)
-expect(
-    TicketAlertMode.pylonVerifiedTwoMinutes.spokenAnnouncement
-        == "Help Center message unanswered for 2 minutes",
-    "Pylon-verified monitoring has a distinct SLA-breach announcement"
+    TicketAlertMode.channelMessage.spokenAnnouncement == "New message in the alert channel",
+    "single-channel monitoring uses the alert-channel announcement"
 )
 
 let teamsLink = "https://teams.microsoft.com/l/message/19:ticket@thread.tacv2/1784313124?groupId=group-id&tenantId=tenant-id"
@@ -117,51 +166,34 @@ if let defaults = UserDefaults(suiteName: suite) {
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = MonitorState(defaults: defaults)
     expect(state.isMonitoringEnabled, "monitoring defaults to enabled")
-    expect(state.responseDelayMinutes == 0, "response delay defaults to immediate alerts")
-    state.responseDelayMinutes = -1
-    expect(state.responseDelayMinutes == 0, "response delay is clamped to zero minutes")
-    state.responseDelayMinutes = 1
-    expect(state.responseDelayMinutes == 2, "a positive legacy delay selects Pylon's two-minute mode")
-    state.responseDelayMinutes = 11
-    expect(state.responseDelayMinutes == 2, "only immediate and two-minute modes are supported")
+    expect(!state.areTeamVoiceAlertsEnabled, "team voice alerts default to disabled")
     expect(state.pollInterval == 30, "poll interval defaults to 30 seconds")
     state.pollInterval = 1
     expect(state.pollInterval == 30, "poll interval is clamped to 30 seconds")
     state.pollInterval = 45
     expect(state.pollInterval == 45, "poll interval accepts values above 30 seconds")
     state.isMonitoringEnabled = false
+    state.areTeamVoiceAlertsEnabled = true
     state.setLastTimestamp("123.456", for: "C1")
     let restored = MonitorState(defaults: defaults)
     expect(!restored.isMonitoringEnabled, "enablement is persisted")
-    expect(restored.responseDelayMinutes == 2, "Pylon's two-minute mode is persisted")
+    expect(restored.areTeamVoiceAlertsEnabled, "team voice preference is persisted")
     expect(restored.lastTimestamp(for: "C1") == "123.456", "timestamp is persisted")
     expect(restored.lastTimestamp(for: "C2") == nil, "timestamps are scoped per channel")
 } else {
     expect(false, "isolated UserDefaults suite can be created")
 }
 
-let legacySuite = "HelpCenterCoreSelfTest.Legacy.\(UUID().uuidString)"
-if let legacyDefaults = UserDefaults(suiteName: legacySuite) {
-    defer { legacyDefaults.removePersistentDomain(forName: legacySuite) }
-    legacyDefaults.set(true, forKey: "advancedMonitoringEnabled")
-    legacyDefaults.set(7, forKey: "advancedResponseMinutes")
-    let migrated = MonitorState(defaults: legacyDefaults)
-    expect(
-        migrated.responseDelayMinutes == 2,
-        "the previous enabled advanced mode migrates to Pylon's verified two-minute mode"
-    )
-} else {
-    expect(false, "legacy UserDefaults suite can be created")
-}
-
 let unsafeDelaySuite = "HelpCenterCoreSelfTest.UnsafeDelay.\(UUID().uuidString)"
 if let unsafeDelayDefaults = UserDefaults(suiteName: unsafeDelaySuite) {
     defer { unsafeDelayDefaults.removePersistentDomain(forName: unsafeDelaySuite) }
     unsafeDelayDefaults.set(5, forKey: "responseDelayMinutes")
-    unsafeDelayDefaults.set(true, forKey: "responseDelayMigrationCompleted")
     unsafeDelayDefaults.set(Data("retired pending state".utf8), forKey: "pendingFirstTouchTickets")
-    let migrated = MonitorState(defaults: unsafeDelayDefaults)
-    expect(migrated.responseDelayMinutes == 2, "a saved arbitrary delay migrates to two minutes")
+    _ = MonitorState(defaults: unsafeDelayDefaults)
+    expect(
+        unsafeDelayDefaults.object(forKey: "responseDelayMinutes") == nil,
+        "migration removes the retired alert-mode selection"
+    )
     expect(
         unsafeDelayDefaults.object(forKey: "pendingFirstTouchTickets") == nil,
         "migration removes pending tickets created by the retired assignee heuristic"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-help-center monitor — local desktop alerts for new #help-center tickets.
+help-center monitor — local desktop alerts for the dedicated Slack alert channel.
 
-Polls the Slack channel (default: #help-center, C07ES26GU2D) with a bot token
+Polls the dedicated Slack alert channel (C0BJLB6NYQ7) with a bot token
 and fires a native macOS notification whenever a NEW top-level message (= new
 Pylon ticket thread) appears. No server, no dependencies — Python 3 stdlib only.
 
@@ -31,11 +31,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Default source: #monitor-first-touch-missing — a public channel the bot is
-# already a member of, where Pylon posts one "Need to give first touch!"
-# message per customer ticket awaiting a reply. Point at #help-center
-# (C07ES26GU2D) with --channel to watch raw tickets instead.
-DEFAULT_CHANNEL = "C0BHCB96XM5"          # #monitor-first-touch-missing
+# The only production source for audible alerts.
+DEFAULT_CHANNEL = "C0BJLB6NYQ7"
 WORKSPACE_URL = "https://upwindsecurity.slack.com"
 API_BASE = os.environ.get("SLACK_API_BASE", "https://slack.com/api")
 STATE_FILE = Path(os.environ.get("HCM_STATE_FILE", str(Path.home() / ".help-center-monitor-state.json")))
@@ -462,9 +459,9 @@ def run(opts) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Local desktop alerts for new #help-center tickets.")
+    p = argparse.ArgumentParser(description="Local desktop alerts for the dedicated Slack alert channel.")
     p.add_argument("--channel", default=DEFAULT_CHANNEL,
-                   help=f"Slack channel ID to watch (default {DEFAULT_CHANNEL} = #help-center)")
+                   help=f"Slack channel ID to watch (default {DEFAULT_CHANNEL})")
     p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL,
                    help=f"poll interval seconds (default {DEFAULT_INTERVAL}; keep >= 60)")
     p.add_argument("--sound", default="Glass",

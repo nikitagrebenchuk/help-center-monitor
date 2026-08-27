@@ -1,8 +1,8 @@
 # Help Center Monitor
 
-A native macOS menu-bar application that alerts support teammates either when a
-new customer-message event appears or when Pylon reports that a two-minute first
-or next response SLA was breached.
+A native macOS menu-bar application that alerts support teammates when a new
+top-level message appears in either `#help-center` (`C07ES26GU2D`) or
+`#dispatcher` (`C0BJLB6NYQ7`).
 
 After the one-time installation, the user does not run Python or Terminal
 commands. A macOS login item starts the app automatically whenever the user logs
@@ -21,9 +21,11 @@ Employees must not clone this repository or run any script. They receive one
    choose **Open Anyway → Open**.
 4. Allow macOS notifications.
 
-That is the intended production experience. The current local preview still
-needs a one-time Slack credential; it now collects that credential inside the
-app and stores it directly in Keychain, so Terminal commands are never needed.
+That is the intended production experience. The app first loads the Slack bot
+token automatically from AWS Secrets Manager using the standard
+`prod-read-only` SSO profile, then caches it in Keychain. It shows the secure
+paste field only when AWS retrieval fails and no previously cached token is
+available, so Terminal commands are never needed during normal setup.
 For an employee-wide release, use the event-service architecture described
 below so no Slack token is distributed to employee Macs at all. From then on,
 macOS launches the app automatically; the employee only uses the visible
@@ -32,89 +34,78 @@ control window or the menu-bar enable/disable item. Give employees
 
 ## What the application does
 
-- Uses one **Monitoring** switch and a two-choice **Alert mode** control.
-- **Immediate** watches `#monitor-first-touch-missing` (`C0BHCB96XM5`) and
-  alerts on every new customer-message event.
-- **Pylon 2 min** watches `#wg-first-touch-monitor` (`C0BD2LDGYSZ`) and alerts
-  only on Pylon's verified two-minute SLA-breach events. Pylon determines both
-  first-response and next-response breaches.
+- Uses one **Monitoring** switch for two fixed Slack sources:
+  `#help-center` (`C07ES26GU2D`) and `#dispatcher` (`C0BJLB6NYQ7`).
+- Makes no monitoring requests to any other Slack channel.
 - Alerts only on new top-level messages, not thread replies or channel events.
-- Shows the customer and issue number in a native macOS notification.
-- Plays the original, distinctive macOS **Glass** sound at full volume.
-  Immediate mode announces **“New ticket in help-center”**; Pylon mode announces
-  **“Help Center message unanswered for 2 minutes.”** Multiple alerts are queued
-  so speech does not interrupt itself.
+- Shows the source channel, customer, and issue number in a native macOS
+  notification. A new message in each channel produces a separate alert.
+- Plays the original, distinctive macOS **Glass** sound at full volume and
+  announces **“New message in the alert channel.”** An optional **Team
+  voice-overs** switch replaces that system announcement with a randomly chosen,
+  volume-matched teammate recording. Multiple alerts are queued so recordings do
+  not interrupt each other, and an unavailable clip falls back to the system voice.
 - Shows a direct in-app fallback alert if macOS notification permission is
   blocked, so a detected ticket is never silently discarded.
 - Opens the customer Slack or Microsoft Teams link when available, with Pylon
   and the feed message as fallbacks.
 - Remembers the last-seen Slack timestamp across restarts and sleep/wake cycles.
 - Rechecks immediately when the Mac wakes or the user session becomes active.
-- Stores the Slack bot token in macOS Keychain, never in the app bundle.
+- Loads the Slack bot token from AWS Secrets Manager and caches it in macOS
+  Keychain, never in the app bundle or preferences.
 - Honors Slack `Retry-After` rate limits and retries network failures forever.
 - Stays installed and running when monitoring is disabled, but makes no Slack
   requests until the user enables it again. Messages received while disabled
   are intentionally skipped instead of producing an alert flood later.
 
-The app reuses a token already stored under the existing Keychain service name
-`help-center-monitor`, so users of the original Python script normally do not
-need to enter the token again. It also imports the last-seen timestamp from
+On each app launch with monitoring enabled, credential resolution follows this
+order:
+
+1. Read `/production/monitoring/help-center-monitor` from AWS Secrets Manager in
+   `us-east-1` with the `prod-read-only` profile.
+2. If AWS retrieval fails, reuse a token stored under the existing Keychain
+   service name `help-center-monitor`.
+3. Only if both are unavailable, show the secure manual-paste fallback.
+
+The AWS secret may be the plain `xoxb-…` value or JSON containing that value.
+The app also imports the last-seen timestamp from
 `~/.help-center-monitor-state.json` the first time it starts.
 
-## Alert modes: Immediate or Pylon 2 min
+## Monitored Slack channels
 
-Keep **Monitoring** enabled, then choose one mode:
+The production sources are fixed to `#help-center` (`C07ES26GU2D`) and
+`#dispatcher` (`C0BJLB6NYQ7`). Every new top-level message in either channel
+produces an alert. Thread replies, edits, joins, topic changes, and other Slack
+channel events do not. Each channel has its own persisted last-seen timestamp,
+so activity in one channel never consumes or suppresses alerts from the other.
 
-- **Immediate:** reads only `#monitor-first-touch-missing` and alerts for every
-  new top-level customer-message event.
-- **Pylon 2 min:** reads only `#wg-first-touch-monitor` and alerts for every
-  top-level Pylon event containing an issue number and **SLA breached**. The app
-  does not independently decide whether a teammate replied.
-
-The two-minute channel is the source of truth. In this mode the app never reads
-`#help-center`, a customer Slack channel, a Microsoft Teams conversation, or a
-Pylon Assignee field. This avoids treating customer follow-ups, customer
-self-replies, or unrelated assignment changes as an Upwind response. It also
-means the app handles first-response and next-response breaches identically and
-can alert for Pylon-managed Teams tickets without reading Teams.
-
-Switching modes starts the newly selected feed from the current time, preventing
-historical backlog alerts. Disabling Monitoring also skips messages received
-while disabled. Retired locally queued assignee-based checks are removed during
-the one-time migration.
-
-### Verify the Pylon feed
-
-Select **Pylon 2 min**, then click **Verify Pylon 2-Minute Feed** in the control
-window or menu-bar menu. The read-only check:
-
-1. Reads a bounded recent sample from `#wg-first-touch-monitor` using the
-   Monitoring Bot.
-2. Confirms that a real Pylon issue/SLA-breach event is present.
-3. Sends a labeled Pylon two-minute test notification with the production Glass
-   sound and spoken announcement.
-
-It does not post to Slack or inspect `#help-center`, Pylon assignees, customer
-channels, or customer threads.
+The first time the app sees either source, it starts that channel from the
+current time so existing messages do not produce a backlog of alerts. Disabling
+Monitoring also skips messages received while disabled.
 
 ## Latency, credentials, and permissions
 
 The local preview polls immediately at startup, then waits 30 seconds between
-successful checks. An event in either source feed therefore takes 0–30 seconds
-to be noticed under normal conditions—about 15 seconds on average—plus
-Slack/network response time. For Pylon mode, this polling latency begins after
-Pylon creates its two-minute breach event. A Slack rate limit, sleep, or network
-outage can make this longer. The panel states the normal interval instead of
-implying that the connection is real-time.
+successful checks. An event in either monitored channel therefore takes 0–30
+seconds to be noticed under normal conditions—about 15 seconds on average—plus
+Slack/network response time. A Slack rate limit, sleep, or network outage can
+make this longer. The panel states the normal interval instead of implying that
+the connection is real-time.
 
-The token is never hard-coded or written to preferences. The in-app secure
-field creates a generic password in macOS Keychain with
+The token is never hard-coded, printed to logs, or written to preferences. The
+app invokes the locally installed AWS CLI so it can reuse the managed Mac's
+existing AWS SSO session without embedding long-lived AWS credentials. The
+`prod-read-only` role must allow `secretsmanager:GetSecretValue` for only
+`/production/monitoring/help-center-monitor`. A successful result is stored as a
+generic password in macOS Keychain with
 `AfterFirstUnlockThisDeviceOnly`, meaning it stays on that Mac and is available
 only after the user has unlocked it. A pre-existing legacy Keychain item keeps
-its original access policy when updated. Keychain storage is appropriate for a
-pilot, but a shared bot token copied to every employee Mac increases the number
-of places where that secret can be accessed. It is not the recommended
-broad-deployment architecture.
+its original access policy when updated. If the AWS CLI is unavailable, the SSO
+session has expired, access is denied, the request times out, or the secret is
+malformed, the app falls back to Keychain and then to the secure paste field.
+Keychain storage is appropriate for a pilot, but a shared bot token present on
+every employee Mac increases the number of places where that secret can be
+accessed. It is not the recommended broad-deployment architecture.
 
 For production, Slack should send `message.channels` Events API callbacks to a
 small company-managed service. That service stores Slack secrets in the cloud
@@ -136,7 +127,8 @@ Requirements: macOS 13 or newer and Apple Command Line Tools or Xcode.
 ./scripts/install_app.sh
 ```
 
-This builds and installs the app at:
+This replaces the existing installation in `/Applications` or
+`~/Applications`. A first developer installation is placed at:
 
 ```text
 ~/Applications/Help Center Monitor.app
@@ -145,13 +137,19 @@ This builds and installs the app at:
 On first launch of the local preview:
 
 1. Allow notifications when macOS asks.
-2. If Slack access is not already configured, use **Set Up Slack Access** in the
-   panel and paste the `xoxb-` token into the secure field. Do not use Terminal.
+2. The app automatically loads Slack access through the `prod-read-only` AWS
+   profile. If that fails and no token is cached, paste the fallback `xoxb-`
+   token into the secure field. Do not use Terminal.
 3. If the menu says **Allow Automatic Start…**, click it and enable
    Help Center Monitor in **System Settings → General → Login Items**.
 
 After that, no command needs to be run again. The app starts automatically at
 every login and internally retries Slack and network failures.
+
+Teammates updating an older copy that was installed from this repository should
+use the shorter [TEAM_UPDATE.txt](TEAM_UPDATE.txt) guide. The update replaces the
+app at the same path and retains the existing Keychain token, notification
+permission, and login-item path.
 
 If the old Python monitor is still running in a terminal, stop it after the
 native app reports **Status: Monitoring**. If the old optional LaunchAgent was
@@ -161,17 +159,18 @@ after confirming the new app works; otherwise both monitors will poll Slack.
 ## Menu-bar controls
 
 - **Monitoring Enabled / Disabled** — the main on/off toggle.
-- **Alert Mode: Immediate / Pylon-Verified 2 Minutes** — opens the control panel
-  to switch the trusted source feed.
-- **Verify Pylon 2-Minute Feed…** — available in Pylon mode and validates the
-  real source feed before sending a labeled local test alert.
+- **Team Voice Alerts Enabled / Disabled** — randomly uses a bundled teammate
+  recording instead of the system-spoken announcement. This is off by default.
+- **Sources: #help-center and #dispatcher** — shows both fixed production
+  sources.
 - **Status** — authentication, connectivity, rate-limit, or configuration state.
 - **Last checked** — time of the most recent successful Slack check.
 - **Notifications Enabled / Fix Notifications…** — reports macOS permission
   separately from Slack connectivity and opens the correct System Settings pane.
 - **Send Test Alert** — either sends a banner or immediately explains
   why macOS blocked it.
-- **Replace Slack Token…** — securely changes the Keychain token.
+- **Replace Slack Token…** — manually overrides the Keychain token when
+  troubleshooting the automatic AWS flow.
 - **Allow Automatic Start…** — appears only if macOS approval is still needed.
 
 Opening Help Center Monitor from Spotlight always opens the same controls in a
@@ -184,6 +183,21 @@ menu when alerts are not wanted. macOS still allows administrators to stop or
 disable the background item in System Settings.
 
 ## Build and verify
+
+Prepare one recording or a whole directory before building:
+
+```bash
+swift scripts/process_team_voices.swift \
+  --output Resources/TeamVoices \
+  /path/to/recordings
+```
+
+The processor accepts common phone and desktop audio formats, converts them to
+mono, trims leading and trailing silence, applies light speech compression,
+normalizes active speech to −19 dBFS, caps peaks, and adds short fades at the cut
+points. It uses `ffmpeg` when available for phone-exported AAC files; set
+`HCM_FFMPEG_PATH` when it is installed in a nonstandard location. Processed
+files in `Resources/TeamVoices` are copied into the app bundle automatically.
 
 Build an ad-hoc signed development app:
 
@@ -200,11 +214,12 @@ Run the offline core checks:
 ./scripts/self_test.sh
 ```
 
-The checks cover Slack markdown cleanup, attachment fallback text, issue and
-sender extraction, reply/event filtering, Pylon SLA-breach recognition,
-Slack/Teams/Pylon deep-link selection, migration to the two supported modes,
-per-channel last-seen persistence, bounded Pylon-feed verification, and recovery
-of multi-page Slack history after a mocked HTTP 429. They also verify the
+The checks cover AWS plain-text/JSON secret parsing, Slack markdown cleanup,
+attachment fallback text, issue and
+sender extraction, reply/event filtering, Pylon metadata recognition,
+Slack/Teams/Pylon deep-link selection, retired mode-state cleanup,
+per-channel last-seen persistence, bounded history reads, and recovery of
+multi-page Slack history after a mocked HTTP 429. They also verify the
 Command+V Paste menu contract and the notification-versus-ordinary-reopen state
 machine. They never read the real Keychain token or call Slack.
 
@@ -255,7 +270,8 @@ or a Terminal command.
 Help Center Monitor.app
 ├── visible control window and menu-bar UI
 ├── native notifications
-├── Keychain-backed Slack credential
+├── normalized teammate voice-over library with random playback
+├── AWS Secrets Manager-backed Slack credential with Keychain/manual fallback
 ├── persistent enablement and last-seen state
 └── macOS main-app login item
     ├── starts automatically at login
@@ -265,16 +281,21 @@ Help Center Monitor.app
 The installed app registers itself with Apple's `SMAppService.mainApp`. It is a
 single process: Spotlight reopening, the control window, menu-bar item,
 notifications, and monitoring loop all belong to the same application. Version
-0.7.0 replaces the locally inferred 1–10 minute assignee check with two explicit
-source feeds: immediate events and Pylon-verified two-minute first/next-response
-SLA breaches. It removes old pending timers during migration and never reads
-`#help-center` or customer threads in Pylon mode. Version 0.6.3 added a native
+0.8.3 expands the bundled, normalized teammate voice-over library to ten
+recordings. Version 0.8.0
+added the persisted, opt-in teammate voice-over library, random nonrepeating
+selection, safe system-voice fallback, and the batch audio preparation pipeline.
+Version 0.7.1 replaced the earlier source modes with `C0BJLB6NYQ7` as the only
+production Slack source and removed retired alert-mode state during migration.
+The current source list adds `#help-center` (`C07ES26GU2D`) alongside that
+dispatcher channel, with independent last-seen state and alerts for both.
+Version 0.6.3 added a native
 Internet Location for the one-click Privacy & Security shortcut in unsigned
 internal DMGs. The app also includes the recognizable support-alert icon, compact status-card UI,
 correctly sized toggle, 30-second polling, visible credential and real login-item
 readiness, in-app Keychain setup, persistent notification-permission guidance,
-queued Glass/speech alerts, rate-aware pagination, and the spoken “New ticket in
-help-center” alert. It also restores standard Command+V paste in the secure token
+queued Glass/speech alerts, rate-aware pagination, and the spoken alert-channel
+announcement. It also restores standard Command+V paste in the secure token
 field and prevents notification clicks from reopening the control panel before
 Slack. The app unregisters the earlier experimental helper-agent architecture
 during migration.

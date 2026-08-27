@@ -63,6 +63,9 @@ mkdir -p \
 install -m 755 "$UNIVERSAL_BIN" "$APP/Contents/MacOS/HelpCenterMonitor"
 install -m 644 "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 install -m 644 "$ICON_FILE" "$APP/Contents/Resources/AppIcon.icns"
+if [[ -d "$ROOT/Resources/TeamVoices" ]]; then
+  ditto "$ROOT/Resources/TeamVoices" "$APP/Contents/Resources/TeamVoices"
+fi
 install -m 644 \
   "$ROOT/Resources/io.upwind.help-center-monitor.agent.plist" \
   "$APP/Contents/Library/LaunchAgents/io.upwind.help-center-monitor.agent.plist"

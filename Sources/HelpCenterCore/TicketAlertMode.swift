@@ -1,31 +1,15 @@
 public enum TicketAlertMode {
-    case immediate
-    case pylonVerifiedTwoMinutes
+    case channelMessage
 
     public var spokenAnnouncement: String {
-        switch self {
-        case .immediate:
-            return "New ticket in help-center"
-        case .pylonVerifiedTwoMinutes:
-            return "Help Center message unanswered for 2 minutes"
-        }
+        "New message in the alert channel"
     }
 
     public var testTitle: String {
-        switch self {
-        case .immediate:
-            return "Help Center Monitor"
-        case .pylonVerifiedTwoMinutes:
-            return "Pylon-Verified Help Center Test"
-        }
+        "Help Center Monitor"
     }
 
     public var testBody: String {
-        switch self {
-        case .immediate:
-            return "Test notification — default alerts are working."
-        case .pylonVerifiedTwoMinutes:
-            return "Test notification — this is how a Pylon-verified two-minute SLA breach sounds."
-        }
+        "Test notification — Slack channel alerts are working."
     }
 }

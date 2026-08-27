@@ -6,9 +6,11 @@ You do this once. You do not need Terminal, Python, or the source-code folder.
 
 - macOS 13 or newer
 - The approved Help Center Monitor DMG from the release owner
-- The Slack access token sent to you **separately through the company password
-  manager or approved secret-sharing tool**
+- The standard AWS CLI and an active `prod-read-only` SSO session on your managed
+  Mac
 
+The app loads Slack access automatically. If that fails, obtain the fallback
+token through the company password manager or approved secret-sharing tool.
 Never put the token in email, an ordinary Slack message, or this guide.
 
 ## Install
@@ -26,17 +28,11 @@ Never put the token in email, an ordinary Slack message, or this guide.
    If the app opened normally in step 3, skip steps 4–6.
 7. Eject the disk image.
 8. Click **Allow** when macOS asks about notifications.
-9. Paste the separately supplied Slack token into the secure setup box with
-   **Command+V**, then click **Save**. If the box is not visible, click **Set Up
-   Slack Access**.
-10. Make sure the **Monitoring** switch is green and on. Choose **Immediate**
-   for every new customer-message event, or **Pylon 2 min** for only Pylon's
-   verified two-minute first/next-response SLA breaches.
-
-To validate the delayed source without posting in Slack, select **Pylon 2 min**
-and click **Verify Pylon 2-Minute Feed**. A successful check confirms the bot can
-read a recent real Pylon breach event and sends a labeled two-minute test alert.
-The app does not inspect customer channels, `#help-center`, or Pylon assignees.
+9. Wait while the app loads Slack access automatically from AWS Secrets Manager.
+   Only if the secure fallback box appears, paste the separately supplied token
+   with **Command+V**, then click **Save**.
+10. Make sure the **Monitoring** switch is green and on. The panel should say it
+    watches `#help-center` and `#dispatcher`.
 
 The Privacy & Security approval is required once for this internal unsigned
 build. A newly rebuilt version may require the same approval again.
@@ -59,7 +55,10 @@ General → Login Items**. Return to the app and confirm the bottom line is gree
 Turn up the Mac's output volume and click **Send Test Alert**. You should receive
 a notification banner, hear the Glass alert sound, and hear:
 
-> New ticket in help-center
+> New message in the alert channel
+
+To use the team recordings instead, enable **Team voice-overs** in the app and
+click **Test Team Voice Alert**. Each alert will choose a recording randomly.
 
 You can now close the panel. No Dock window is expected: the menu-bar bell stays
 running, and the app starts automatically at login. Open it later from Spotlight

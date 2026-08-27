@@ -3,7 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_APP="$ROOT/dist/Help Center Monitor.app"
-INSTALL_DIR="$HOME/Applications"
+SYSTEM_APP="/Applications/Help Center Monitor.app"
+USER_APP="$HOME/Applications/Help Center Monitor.app"
+if [[ -d "$SYSTEM_APP" ]]; then
+  INSTALL_DIR="/Applications"
+elif [[ -d "$USER_APP" ]]; then
+  INSTALL_DIR="$HOME/Applications"
+else
+  INSTALL_DIR="$HOME/Applications"
+fi
 INSTALLED_APP="$INSTALL_DIR/Help Center Monitor.app"
 
 "$ROOT/scripts/build_app.sh"
@@ -47,6 +55,7 @@ if ! ditto "$SOURCE_APP" "$INSTALLED_APP"; then
   fi
   exit 1
 fi
+codesign --verify --deep --strict "$INSTALLED_APP"
 rm -rf "$BACKUP_APP"
 open -n "$INSTALLED_APP"
 # A normal launch keeps this menu-bar app unobtrusive. Reopen it once after an
@@ -54,7 +63,8 @@ open -n "$INSTALLED_APP"
 sleep 0.5
 open "$INSTALLED_APP"
 
-echo "Installed: $INSTALLED_APP"
+INSTALLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist")"
+echo "Installed: $INSTALLED_APP (version $INSTALLED_VERSION)"
 
 LEGACY_PLIST="$HOME/Library/LaunchAgents/io.upwind.help-center-monitor.plist"
 if [[ -f "$LEGACY_PLIST" ]]; then

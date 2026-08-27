@@ -8,12 +8,14 @@ let package = Package(
     ],
     products: [
         .library(name: "HelpCenterCore", targets: ["HelpCenterCore"]),
+        .library(name: "HelpCenterAWS", targets: ["HelpCenterAWS"]),
         .library(name: "HelpCenterSlack", targets: ["HelpCenterSlack"]),
         .executable(name: "HelpCenterMonitor", targets: ["HelpCenterMonitor"]),
         .executable(name: "HelpCenterCoreSelfTest", targets: ["HelpCenterCoreSelfTest"]),
     ],
     targets: [
         .target(name: "HelpCenterCore"),
+        .target(name: "HelpCenterAWS"),
         .target(
             name: "HelpCenterSlack",
             dependencies: ["HelpCenterCore"]
@@ -21,7 +23,7 @@ let package = Package(
         .target(name: "HelpCenterUI"),
         .executableTarget(
             name: "HelpCenterMonitor",
-            dependencies: ["HelpCenterCore", "HelpCenterSlack", "HelpCenterUI"],
+            dependencies: ["HelpCenterAWS", "HelpCenterCore", "HelpCenterSlack", "HelpCenterUI"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Security"),
@@ -31,7 +33,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "HelpCenterCoreSelfTest",
-            dependencies: ["HelpCenterCore", "HelpCenterSlack", "HelpCenterUI"],
+            dependencies: ["HelpCenterAWS", "HelpCenterCore", "HelpCenterSlack", "HelpCenterUI"],
             path: "Tests/HelpCenterCoreSelfTest"
         ),
     ],

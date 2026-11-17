@@ -45,6 +45,16 @@ control window or the menu-bar enable/disable item. Give employees
   voice-overs** switch replaces that system announcement with a randomly chosen,
   volume-matched teammate recording. Multiple alerts are queued so recordings do
   not interrupt each other, and an unavailable clip falls back to the system voice.
+- **Alert sounds → Choose Sound Files…** (control window or menu-bar
+  **Alert Sounds…**) replaces the **New message chime** (Glass) and/or the
+  **New message voice** (the spoken announcement) with your own MP3, WAV, M4A,
+  AIFF or CAF file of at most 2 MB and 10 seconds. Each sound has **Play**,
+  **Choose File… / Change…** and **Use Built-in**. A file is checked and played
+  when picked, then copied to
+  `~/Library/Application Support/Help Center Monitor/AlertSounds`, so moving the
+  original doesn't silence alerts. The voice waits for a custom chime to finish,
+  team voice-overs (when on) take priority over a custom voice, and any file that
+  can't play falls back to the built-in sound.
 - Shows a direct in-app fallback alert if macOS notification permission is
   blocked, so a detected ticket is never silently discarded.
 - Opens the customer Slack or Microsoft Teams link when available, with Pylon

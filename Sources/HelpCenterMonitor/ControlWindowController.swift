@@ -118,11 +118,14 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
     private let onSendTest: () -> Void
     private let onOpenNotificationSettings: () -> Void
     private let onConfigureSlack: () -> Void
+    private let onChooseAlertSounds: () -> Void
 
     private let monitoringSwitch = GreenSwitch()
     private let monitoringDetailLabel = NSTextField(labelWithString: "")
     private let teamVoicesSwitch = GreenSwitch()
     private let teamVoicesDetailLabel = NSTextField(labelWithString: "")
+    private let alertSoundsDetailLabel = NSTextField(labelWithString: "")
+    private let alertSoundsButton = NSButton()
     private let monitoringDot = NSTextField(labelWithString: "●")
     private let slackValueLabel = NSTextField(labelWithString: "")
     private let lastCheckedLabel = NSTextField(labelWithString: "")
@@ -144,7 +147,8 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         onSetTeamVoicesEnabled: @escaping (Bool) -> Void,
         onSendTest: @escaping () -> Void,
         onOpenNotificationSettings: @escaping () -> Void,
-        onConfigureSlack: @escaping () -> Void
+        onConfigureSlack: @escaping () -> Void,
+        onChooseAlertSounds: @escaping () -> Void
     ) {
         self.monitoredChannels = monitoredChannels
         self.onSetEnabled = onSetEnabled
@@ -152,9 +156,10 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         self.onSendTest = onSendTest
         self.onOpenNotificationSettings = onOpenNotificationSettings
         self.onConfigureSlack = onConfigureSlack
+        self.onChooseAlertSounds = onChooseAlertSounds
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 610),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -186,6 +191,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         enabled: Bool,
         teamVoicesEnabled: Bool,
         availableTeamVoiceCount: Int,
+        alertSoundsSummary: String,
         status: String,
         lastChecked: String?,
         slackCredentialStatus: String,
@@ -208,6 +214,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
             let recordingLabel = availableTeamVoiceCount == 1 ? "recording" : "recordings"
             teamVoicesDetailLabel.stringValue = "Randomly plays one of \(availableTeamVoiceCount) teammate \(recordingLabel)"
         }
+        alertSoundsDetailLabel.stringValue = alertSoundsSummary
         testButton.title = teamVoicesEnabled ? "Test Team Voice Alert" : "Send Test Alert"
 
         let normalizedStatus = status.lowercased()
@@ -323,6 +330,28 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         teamVoicesRow.alignment = .centerY
         teamVoicesRow.distribution = .fill
 
+        let alertSoundsTitle = NSTextField(labelWithString: "Alert sounds")
+        alertSoundsTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        alertSoundsDetailLabel.font = .systemFont(ofSize: 12)
+        alertSoundsDetailLabel.textColor = .secondaryLabelColor
+        alertSoundsDetailLabel.lineBreakMode = .byTruncatingTail
+
+        let alertSoundsText = NSStackView(views: [alertSoundsTitle, alertSoundsDetailLabel])
+        alertSoundsText.orientation = .vertical
+        alertSoundsText.alignment = .leading
+        alertSoundsText.spacing = 3
+
+        alertSoundsButton.title = "Choose Sound Files…"
+        alertSoundsButton.target = self
+        alertSoundsButton.action = #selector(chooseAlertSounds)
+        alertSoundsButton.bezelStyle = .rounded
+        alertSoundsButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let alertSoundsRow = NSStackView(views: [alertSoundsText, alertSoundsButton])
+        alertSoundsRow.orientation = .horizontal
+        alertSoundsRow.alignment = .centerY
+        alertSoundsRow.distribution = .fill
+
         monitoringDot.font = .systemFont(ofSize: 10)
         credentialsDot.font = .systemFont(ofSize: 10)
         alertsDot.font = .systemFont(ofSize: 10)
@@ -390,6 +419,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         let cardStack = NSStackView(views: [
             monitoringRow,
             teamVoicesRow,
+            alertSoundsRow,
             firstDivider,
             slackRow,
             lastCheckedLabel,
@@ -406,6 +436,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         cardStack.spacing = 9
         cardStack.setCustomSpacing(13, after: monitoringRow)
         cardStack.setCustomSpacing(13, after: teamVoicesRow)
+        cardStack.setCustomSpacing(13, after: alertSoundsRow)
         cardStack.setCustomSpacing(13, after: firstDivider)
         cardStack.setCustomSpacing(13, after: secondDivider)
         cardStack.setCustomSpacing(13, after: thirdDivider)
@@ -466,6 +497,7 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
             cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -15),
             monitoringRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             teamVoicesRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            alertSoundsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             slackRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             credentialsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
             alertsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
@@ -509,5 +541,9 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func configureSlack() {
         onConfigureSlack()
+    }
+
+    @objc private func chooseAlertSounds() {
+        onChooseAlertSounds()
     }
 }

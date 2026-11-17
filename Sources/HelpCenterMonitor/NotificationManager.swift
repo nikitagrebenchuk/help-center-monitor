@@ -47,7 +47,12 @@ final class NotificationManager: NSObject,
 
     private let center = UNUserNotificationCenter.current()
     private var attentionSound: NSSound?
-    private var teamVoiceSound: NSSound?
+    private var customChimeSound: NSSound?
+    /// The team recording or custom voice file now playing; its end starts the next queued alert.
+    private var voiceSound: NSSound?
+    private var previewSound: NSSound?
+    private var previewSynthesizer: NSSpeechSynthesizer?
+    let alertSounds = AlertSoundStore()
     private var speechSynthesizer: NSSpeechSynthesizer?
     private var queuedAttentionAlerts: [QueuedAttentionAlert] = []
     private var isPlayingAttentionAlert = false
@@ -123,9 +128,9 @@ final class NotificationManager: NSObject,
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = String(body.prefix(500))
-            // Glass and the spoken announcement are played directly so the
-            // alert matches the original Python monitor instead of using the
-            // generic notification sound.
+            // The chime (Glass or the user's file) and the voice are played
+            // directly so the alert matches the original Python monitor
+            // instead of using the generic notification sound.
             content.sound = nil
             if let link {
                 content.userInfo["link"] = link
@@ -247,7 +252,37 @@ final class NotificationManager: NSObject,
     private func playNextAttentionAlertIfNeeded() {
         guard !isPlayingAttentionAlert, !queuedAttentionAlerts.isEmpty else { return }
         let alert = queuedAttentionAlerts.removeFirst()
+        isPlayingAttentionAlert = true
 
+        let customChimeDuration = playChime()
+        let delay = AlertSoundRules.voiceDelay(customChimeDuration: customChimeDuration)
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.playVoice(for: alert)
+            }
+        } else {
+            playVoice(for: alert)
+        }
+    }
+
+    /// Plays the user's chime file, or Glass. Returns the custom file's length,
+    /// or nil when the built-in Glass sound played.
+    private func playChime() -> TimeInterval? {
+        if let file = alertSounds.file(for: .chime),
+           let sound = alertSounds.makeSound(for: .chime) {
+            sound.volume = 1.0
+            customChimeSound?.stop()
+            customChimeSound = sound
+            if sound.play() {
+                return file.duration
+            }
+            customChimeSound = nil
+        }
+        playGlass()
+        return nil
+    }
+
+    private func playGlass() {
         if attentionSound == nil {
             attentionSound = NSSound(
                 contentsOfFile: Self.glassSoundPath,
@@ -257,12 +292,34 @@ final class NotificationManager: NSObject,
         }
         attentionSound?.stop()
         attentionSound?.play()
+    }
 
+    /// Team voice-overs (when switched on), then the user's voice file, then
+    /// the system voice. Each step falls back to the next if it can't play.
+    private func playVoice(for alert: QueuedAttentionAlert) {
         if alert.usesTeamVoice, playRandomTeamVoice() {
             return
         }
-
+        if playCustomVoice() {
+            return
+        }
         playSystemVoice(alert.spokenMessage)
+    }
+
+    private func playCustomVoice() -> Bool {
+        guard let sound = alertSounds.makeSound(for: .voice) else { return false }
+        return playVoiceSound(sound)
+    }
+
+    private func playVoiceSound(_ sound: NSSound) -> Bool {
+        sound.volume = 1.0
+        sound.delegate = self
+        voiceSound = sound
+        isPlayingAttentionAlert = sound.play()
+        if !isPlayingAttentionAlert {
+            voiceSound = nil
+        }
+        return isPlayingAttentionAlert
     }
 
     private func playRandomTeamVoice() -> Bool {
@@ -278,15 +335,32 @@ final class NotificationManager: NSObject,
               let sound = NSSound(contentsOf: url, byReference: true) else {
             return false
         }
-        sound.volume = 1.0
-        sound.delegate = self
-        teamVoiceSound = sound
         lastTeamVoiceURL = url
-        isPlayingAttentionAlert = sound.play()
-        if !isPlayingAttentionAlert {
-            teamVoiceSound = nil
+        return playVoiceSound(sound)
+    }
+
+    /// Plays one sound on its own for the Alert Sounds window, outside the
+    /// alert queue: exactly what an alert would play for that slot.
+    func previewSound(_ slot: AlertSoundSlot, spokenMessage: String) {
+        previewSound?.stop()
+        previewSound = nil
+        previewSynthesizer?.stopSpeaking()
+        if let sound = alertSounds.makeSound(for: slot) {
+            sound.volume = 1.0
+            previewSound = sound
+            if sound.play() { return }
+            previewSound = nil
         }
-        return isPlayingAttentionAlert
+        switch slot {
+        case .chime:
+            playGlass()
+        case .voice:
+            if previewSynthesizer == nil {
+                previewSynthesizer = NSSpeechSynthesizer(voice: nil)
+                previewSynthesizer?.volume = 1.0
+            }
+            previewSynthesizer?.startSpeaking(spokenMessage)
+        }
     }
 
     private func playSystemVoice(_ spokenMessage: String) {
@@ -331,8 +405,8 @@ final class NotificationManager: NSObject,
     }
 
     func sound(_ sound: NSSound, didFinishPlaying flag: Bool) {
-        guard sound === teamVoiceSound else { return }
-        teamVoiceSound = nil
+        guard sound === voiceSound else { return }
+        voiceSound = nil
         isPlayingAttentionAlert = false
         playNextAttentionAlertIfNeeded()
     }

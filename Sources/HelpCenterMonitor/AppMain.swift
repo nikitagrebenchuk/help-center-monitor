@@ -70,6 +70,7 @@ enum HelpCenterMonitorMain {
         if let identifier = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: identifier)
         }
+        AlertSoundStore.removeAllStoredFiles()
         let legacyState = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".help-center-monitor-state.json")
         try? FileManager.default.removeItem(at: legacyState)

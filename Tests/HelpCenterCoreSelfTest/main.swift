@@ -460,6 +460,71 @@ expect(
     "notification activation does not hide a panel that was already open"
 )
 
+// Custom alert sound files
+expect(
+    AlertSoundRules.preflightProblem(fileName: "ding.mp3", byteCount: 500_000) == nil,
+    "a small MP3 passes the alert-sound preflight"
+)
+expect(
+    AlertSoundRules.preflightProblem(fileName: "ding.WAV", byteCount: 1_000) == nil,
+    "alert-sound extensions are matched case-insensitively"
+)
+expect(
+    AlertSoundRules.preflightProblem(fileName: "ding.ogg", byteCount: 1_000) != nil,
+    "unsupported alert-sound formats are refused"
+)
+expect(
+    AlertSoundRules.preflightProblem(fileName: "big.wav", byteCount: 3 * 1_048_576)?
+        .contains("3.0 MB") == true,
+    "alert-sound files over 2 MB are refused with their size"
+)
+expect(
+    AlertSoundRules.durationProblem(fileName: "x.mp3", duration: nil) != nil,
+    "undecodable alert-sound files are refused"
+)
+expect(
+    AlertSoundRules.durationProblem(fileName: "x.mp3", duration: 10.0) == nil,
+    "a 10-second alert sound is accepted"
+)
+expect(
+    AlertSoundRules.durationProblem(fileName: "x.mp3", duration: 12.4)?
+        .contains("12 seconds") == true,
+    "alert sounds longer than 10 seconds are refused with their length"
+)
+expect(
+    AlertSoundRules.voiceDelay(customChimeDuration: nil) == 0,
+    "the voice starts with the built-in Glass chime, as before"
+)
+expect(
+    abs(AlertSoundRules.voiceDelay(customChimeDuration: 2.0) - 2.3) < 0.0001,
+    "the voice waits for a custom chime plus a short beat"
+)
+
+let soundSuite = "HelpCenterCoreSelfTest.AlertSounds.\(UUID().uuidString)"
+if let soundDefaults = UserDefaults(suiteName: soundSuite) {
+    defer { soundDefaults.removePersistentDomain(forName: soundSuite) }
+    let sounds = AlertSoundSettings(defaults: soundDefaults)
+    expect(sounds.customCount == 0, "alert sounds default to built-in")
+    expect(sounds.summary == "All sounds are built-in", "built-in alert-sound summary")
+    let chime = AlertSoundFile(name: "my chime.mp3", storedFileName: "chime-1.mp3", duration: 1.5)
+    sounds.setFile(chime, for: .chime)
+    let restoredSounds = AlertSoundSettings(defaults: soundDefaults)
+    expect(restoredSounds.file(for: .chime) == chime, "a custom chime is persisted")
+    expect(restoredSounds.file(for: .voice) == nil, "alert-sound slots are independent")
+    expect(restoredSounds.summary == "1 of 2 sounds use your own file", "custom alert-sound summary")
+    expect(
+        AlertSoundSettings.summary(customCount: 0) == "All sounds are built-in",
+        "a slot whose stored file is missing is summarised as built-in"
+    )
+    restoredSounds.setFile(nil, for: .chime)
+    expect(sounds.customCount == 0, "resetting a slot returns it to the built-in sound")
+    expect(soundDefaults.object(forKey: "alertSoundFiles") == nil, "an empty alert-sound index is removed")
+    soundDefaults.set(Data("not json".utf8), forKey: "alertSoundFiles")
+    expect(sounds.customCount == 0, "a corrupt alert-sound index falls back to built-in sounds")
+} else {
+    expect(false, "isolated alert-sound UserDefaults suite can be created")
+}
+
 if failures > 0 {
     exit(1)
 }

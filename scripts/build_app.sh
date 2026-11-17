@@ -52,7 +52,10 @@ UNIVERSAL_DIR="$ROOT/.build/universal"
 UNIVERSAL_BIN="$UNIVERSAL_DIR/HelpCenterMonitor"
 mkdir -p "$UNIVERSAL_DIR"
 lipo -create "${BINARIES[@]}" -output "$UNIVERSAL_BIN"
-lipo "$UNIVERSAL_BIN" -verify_arch arm64 x86_64
+# One architecture per call: newer lipo releases read a second name as another input file.
+for ARCH in arm64 x86_64; do
+  lipo "$UNIVERSAL_BIN" -verify_arch "$ARCH"
+done
 
 rm -rf "$APP"
 mkdir -p \

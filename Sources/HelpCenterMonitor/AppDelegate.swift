@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitorTask: Task<Void, Never>?
     private var cachedSlackToken: String?
     private var controlWindowController: ControlWindowController?
+    private var alertSoundsWindowController: AlertSoundsWindowController?
     private var currentStatus = "Starting…"
     private var lastCheckedText: String?
     private var notificationStatusText = "Checking notification permission…"
@@ -203,6 +204,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         testItem.target = self
         testItem.isEnabled = true
         menu.addItem(testItem)
+
+        let soundsItem = NSMenuItem(
+            title: "Alert Sounds…",
+            action: #selector(showAlertSoundsWindow),
+            keyEquivalent: ""
+        )
+        soundsItem.target = self
+        menu.addItem(soundsItem)
 
         let tokenItem = NSMenuItem(
             title: "Replace Slack Token…",
@@ -446,11 +455,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onConfigureSlack: { [weak self] in
                     self?.replaceSlackToken()
+                },
+                onChooseAlertSounds: { [weak self] in
+                    self?.showAlertSoundsWindow()
                 }
             )
         }
         updateControlWindow()
         controlWindowController?.present()
+    }
+
+    @objc private func showAlertSoundsWindow() {
+        if alertSoundsWindowController == nil {
+            alertSoundsWindowController = AlertSoundsWindowController(
+                notifications: notifications,
+                spokenMessage: currentAlertMode.spokenAnnouncement,
+                onChange: { [weak self] in
+                    self?.logger.info("Alert sound files changed: \(self?.notifications.alertSounds.summary ?? "", privacy: .public)")
+                    self?.updateControlWindow()
+                }
+            )
+        }
+        alertSoundsWindowController?.present()
     }
 
     private func handleNotificationSelection(_ url: URL?) {
@@ -881,6 +907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             enabled: state.isMonitoringEnabled,
             teamVoicesEnabled: state.areTeamVoiceAlertsEnabled,
             availableTeamVoiceCount: notifications.availableTeamVoiceCount,
+            alertSoundsSummary: notifications.alertSounds.summary,
             status: currentStatus,
             lastChecked: lastCheckedText,
             slackCredentialStatus: slackCredentialStatusText,

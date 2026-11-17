@@ -28,7 +28,12 @@ final class AlertSoundStore {
             .appendingPathComponent("AlertSounds", isDirectory: true)
     }
 
-    var summary: String { settings.summary }
+    /// Counts only slots whose stored copy still exists, matching what plays.
+    var summary: String {
+        AlertSoundSettings.summary(
+            customCount: AlertSoundSlot.allCases.filter { file(for: $0) != nil }.count
+        )
+    }
 
     func file(for slot: AlertSoundSlot) -> AlertSoundFile? {
         guard let file = settings.file(for: slot),

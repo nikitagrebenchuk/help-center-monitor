@@ -512,6 +512,10 @@ if let soundDefaults = UserDefaults(suiteName: soundSuite) {
     expect(restoredSounds.file(for: .chime) == chime, "a custom chime is persisted")
     expect(restoredSounds.file(for: .voice) == nil, "alert-sound slots are independent")
     expect(restoredSounds.summary == "1 of 2 sounds use your own file", "custom alert-sound summary")
+    expect(
+        AlertSoundSettings.summary(customCount: 0) == "All sounds are built-in",
+        "a slot whose stored file is missing is summarised as built-in"
+    )
     restoredSounds.setFile(nil, for: .chime)
     expect(sounds.customCount == 0, "resetting a slot returns it to the built-in sound")
     expect(soundDefaults.object(forKey: "alertSoundFiles") == nil, "an empty alert-sound index is removed")

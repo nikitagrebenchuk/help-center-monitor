@@ -115,9 +115,15 @@ public struct AlertSoundSettings {
     }
 
     public var summary: String {
+        Self.summary(customCount: customCount)
+    }
+
+    /// The control-window line for `customCount` slots that use a file. The app
+    /// passes only slots whose stored copy still exists, so the line never
+    /// claims a custom sound while the built-in one is what plays.
+    public static func summary(customCount count: Int) -> String {
         let total = AlertSoundSlot.allCases.count
-        let count = customCount
-        return count == 0
+        return count <= 0
             ? "All sounds are built-in"
             : "\(count) of \(total) sounds use your own file"
     }
